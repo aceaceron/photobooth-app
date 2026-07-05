@@ -61,7 +61,6 @@ export function EditView({
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
   const filterCss = filterToCss(filters)
 
-  // Sync Guest UI to Host's changes
   useEffect(() => {
     if (!isHost && syncedFilters) {
       setFilters(syncedFilters)
@@ -269,7 +268,6 @@ export function EditView({
         </div>
 
         <div className="flex flex-col gap-6 w-full max-w-md mx-auto">
-          {/* Chat & Suggestions Panel */}
           {participants.length > 1 && (!hostFinalized || chatMessages.length > 0) && (
              <div className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur flex flex-col h-56">
                 <h2 className="mb-2 text-sm font-semibold uppercase text-muted-foreground flex items-center gap-2">
@@ -294,7 +292,6 @@ export function EditView({
              </div>
           )}
 
-          {/* Edit Controls (Host Only) */}
           {isHost && !hostFinalized && (
             <>
               <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">

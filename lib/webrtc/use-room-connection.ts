@@ -59,6 +59,7 @@ type UseRoomConnectionArgs = {
   onCountdown?: (msg: CountdownMessage) => void
   onChat?: (msg: { sender: string, text: string, isAction?: boolean }) => void
   onSyncFilters?: (filters: any) => void
+  onSyncTemplate?: (layoutId: string, background: any) => void
   onFinalize?: () => void
 }
 
@@ -82,6 +83,7 @@ export function useRoomConnection({
   onCountdown,
   onChat,
   onSyncFilters,
+  onSyncTemplate,
   onFinalize
 }: UseRoomConnectionArgs) {
   const supabase = useMemoClient()
@@ -98,19 +100,20 @@ export function useRoomConnection({
   const peersRef = useRef<Map<string, PeerHandle>>(new Map())
   const localStreamRef = useRef<MediaStream | null>(localStream)
   
-  // FIX: Restored the missing retryTimerRef
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   
   const onFrameRef = useRef(onFrame)
   const onCountdownRef = useRef(onCountdown)
   const onChatRef = useRef(onChat)
   const onSyncFiltersRef = useRef(onSyncFilters)
+  const onSyncTemplateRef = useRef(onSyncTemplate)
   const onFinalizeRef = useRef(onFinalize)
 
   onFrameRef.current = onFrame
   onCountdownRef.current = onCountdown
   onChatRef.current = onChat
   onSyncFiltersRef.current = onSyncFilters
+  onSyncTemplateRef.current = onSyncTemplate
   onFinalizeRef.current = onFinalize
   localStreamRef.current = localStream
 
@@ -151,6 +154,7 @@ export function useRoomConnection({
           if (msg.type === 'frame') onFrameRef.current?.(id, msg)
           else if (msg.type === 'chat') onChatRef.current?.(msg)
           else if (msg.type === 'sync_filters') onSyncFiltersRef.current?.(msg.filters)
+          else if (msg.type === 'sync_template') onSyncTemplateRef.current?.(msg.layoutId, msg.background)
           else if (msg.type === 'finalize') onFinalizeRef.current?.()
         } catch {}
       }

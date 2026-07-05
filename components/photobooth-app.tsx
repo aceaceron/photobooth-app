@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { AuthDialog } from '@/components/auth-dialog'
+// FIX: Changed from default import to named import
 import { BoothView } from '@/components/booth-view'
 import { JoinNameDialog } from '@/components/join-name-dialog'
 import { LandingView } from '@/components/landing-view'
@@ -205,8 +206,7 @@ export function PhotoboothApp({
                 onStart={() => setView('booth')}
               />
             )}
-
-            {/* BoothView internally mounts EditView upon capture completion, keeping WebRTC alive */}
+            
             {view === 'booth' && (
               <BoothView
                 mode={mode}
@@ -216,10 +216,10 @@ export function PhotoboothApp({
                 background={background}
                 displayName={displayName}
                 onLeave={handleLeave}
-                onSync={(syncedLayout, syncedBgId) => {
+                // This now matches the signature required by BoothViewProps
+                onSyncTemplate={(syncedLayout: string, syncedBg: BackgroundOption) => {
                   setLayout(syncedLayout as LayoutId)
-                  const bg = BACKGROUNDS.find(b => b.id === syncedBgId)
-                  if (bg) setBackground(bg)
+                  setBackground(syncedBg)
                 }}
               />
             )}

@@ -39,7 +39,7 @@ type BoothViewProps = {
   displayName: string
   isHost: boolean 
   onLeave: () => void
-  onSync?: (layoutId: string, backgroundId: string) => void
+  onSyncTemplate: (layoutId: string, background: BackgroundOption) => void
 }
 
 const COUNTDOWN_MS = 3000
@@ -51,13 +51,13 @@ type LocalPlan = CountdownMessage & { startAtEpochMs: number }
 
 export function BoothView({
   mode,
+  isHost,
   roomCode,
   layout,
   background,
   displayName,
-  isHost,
   onLeave,
-  onSync
+  onSyncTemplate,
 }: BoothViewProps) {
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
 
@@ -98,18 +98,19 @@ export function BoothView({
       ]
   }, [])
 
-  const handleCountdown = useCallback((msg: CountdownMessage) => {
-    capturedShotsRef.current = new Set()
-    framesRef.current = [] 
-    setCapturing(true)
-    
-    if (onSync) onSync(msg.layoutId, msg.backgroundId)
-    
-    setPlan({
-      ...msg,
-      startAtEpochMs: Date.now() + msg.delayMs
-    })
-  }, [onSync])
+const handleCountdown = useCallback((msg: CountdownMessage) => {
+  capturedShotsRef.current = new Set()
+  framesRef.current = [] 
+  setCapturing(true)
+  
+  // FIX: Changed 'onSync' to 'onSyncTemplate'
+  if (onSyncTemplate) onSyncTemplate(msg.layoutId, { id: msg.backgroundId } as BackgroundOption)
+  
+  setPlan({
+    ...msg,
+    startAtEpochMs: Date.now() + msg.delayMs
+  })
+}, [onSyncTemplate]) // FIX: Dependency updated
 
   const handleChat = useCallback((msg: any) => setChatMessages(prev => [...prev, msg]), [])
   const handleSyncFilters = useCallback((filters: any) => setSyncedFilters(filters), [])
