@@ -80,7 +80,6 @@ export function BoothView({
 
   const localColor = colorForId(displayName + roomCode)
 
-  // FIX: Properly identify the sender so EditView can mosaic everyone's individual faces
   const handleFrame = useCallback(
     (senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
       framesRef.current = [
@@ -122,12 +121,14 @@ export function BoothView({
     onCountdown: handleCountdown,
   })
 
+  // FIX: Create a deterministic order using peerId so the grid layout 
+  // is mathematically identical for both Host and Guest
   const participants: Participant[] = [
-    { id: 'you', name: displayName, isYou: true, color: localColor },
+    { id: peerId, name: displayName, isYou: true, color: localColor },
     ...Array.from(remotePeers.values())
       .slice(0, MAX_PEERS - 1)
       .map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
-  ]
+  ].sort((a, b) => a.id.localeCompare(b.id)) 
 
   async function requestAccess() {
     setRequesting(true)
@@ -171,7 +172,6 @@ export function BoothView({
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
 
-  // FIX: Each device captures its own high-quality camera feed locally
   function captureLocalFrame(shotIndex: number) {
     const video = localVideoRef.current
     if (!video || video.readyState < 2) return
@@ -190,9 +190,10 @@ export function BoothView({
 
     framesRef.current = [
       ...framesRef.current.filter(
-        (f) => !(f.participantId === 'you' && f.shotIndex === shotIndex),
+        // FIX: Match the new dynamic peerId to ensure the EditView binds this photo to you
+        (f) => !(f.participantId === peerId && f.shotIndex === shotIndex),
       ),
-      { participantId: 'you', shotIndex, dataUrl },
+      { participantId: peerId, shotIndex, dataUrl },
     ]
     
     if (mode === 'room') sendFrameToAll(shotIndex, dataUrl)
@@ -217,7 +218,6 @@ export function BoothView({
     ) {
       capturedShotsRef.current.add(shotIndex)
       
-      // FIX: BOTH Host and Guest run this simultaneously to take their own photo
       captureLocalFrame(shotIndex)
 
       setFlash(true)
@@ -244,7 +244,7 @@ export function BoothView({
     const newPlan: CountdownMessage = {
       instigatorId: peerId,
       totalShots: shots,
-      delayMs: 1500, // Send relative delay for perfect synchronization
+      delayMs: 1500, 
       intervalMs: SHOT_INTERVAL_MS,
       layoutId: layout,
       backgroundId: background.id
