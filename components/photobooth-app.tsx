@@ -49,12 +49,21 @@ export function PhotoboothApp({
   const [background, setBackground] = useState<BackgroundOption>(BACKGROUNDS[0])
   const [authOpen, setAuthOpen] = useState(false)
   
-  // Explicitly identify if this user is the Host vs Guest based on instantiation
   const [isHost, setIsHost] = useState(mode === 'solo' || !initialRoomCode)
 
   const [guestName, setGuestName] = useState<string | null>(null)
   const [joinDialogOpen, setJoinDialogOpen] = useState(false)
   const guestInitRef = useRef(false)
+
+  // FIX: Restore Host privileges if the page reloaded after navigation or refresh
+  useEffect(() => {
+    if (initialRoomCode && typeof window !== 'undefined') {
+      const isHostOfThisRoom = sessionStorage.getItem(`snapory_host_${initialRoomCode}`) === 'true'
+      if (isHostOfThisRoom) {
+        setIsHost(true)
+      }
+    }
+  }, [initialRoomCode])
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -87,6 +96,12 @@ export function PhotoboothApp({
   function handleCreateRoom() {
     logEvent('nav', 'Create Room tapped')
     const code = generateRoomCode()
+    
+    // FIX: Save a host ticket in sessionStorage so it persists across the Next.js navigation remount
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(`snapory_host_${code}`, 'true')
+    }
+
     setMode('room')
     setRoomCode(code)
     setIsHost(true)
