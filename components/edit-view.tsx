@@ -286,7 +286,6 @@ function Slider({
     </label>
   )
 }
-
 function PresetToggle({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button type="button" onClick={onClick} className={cn('rounded-full border px-4 py-1.5 text-sm font-medium transition-colors', active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-muted')}>
