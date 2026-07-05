@@ -28,8 +28,6 @@ import {
   useRoomConnection,
   type CountdownMessage,
 } from '@/lib/webrtc/use-room-connection'
-import { logEvent } from '@/lib/debug-log'
-import { setDebugState } from '@/lib/debug-state'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -82,11 +80,12 @@ export function BoothView({
 
   const localColor = colorForId(displayName + roomCode)
 
+  // FIX: Properly identify the sender so EditView can mosaic everyone's individual faces
   const handleFrame = useCallback(
     (senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
       framesRef.current = [
-        ...framesRef.current.filter((f) => f.shotIndex !== msg.shotIndex),
-        { participantId: 'you', shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
+        ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
+        { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
       ]
     },
     [],
@@ -97,10 +96,8 @@ export function BoothView({
     framesRef.current = [] 
     setCapturing(true)
     
-    // Sync guest's UI to host's configuration
     if (onSync) onSync(msg.layoutId, msg.backgroundId)
     
-    // Evaluate Date.now() strictly upon local receipt to eliminate system clock discrepancies
     setPlan({
       ...msg,
       startAtEpochMs: Date.now() + msg.delayMs
@@ -174,59 +171,27 @@ export function BoothView({
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
 
-  function captureMergedFrame(shotIndex: number) {
-    const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
-    if (videos.length === 0) return
-
-    const canvas = document.createElement('canvas')
-    // Determine strict target aspect ratios (Strip = 4:3, everything else = 1:1)
-    const isSquare = layout !== 'strip'
-    const canvasW = 800
-    const canvasH = isSquare ? 800 : 600
-    canvas.width = canvasW
-    canvas.height = canvasH
+  // FIX: Each device captures its own high-quality camera feed locally
+  function captureLocalFrame(shotIndex: number) {
+    const video = localVideoRef.current
+    if (!video || video.readyState < 2) return
     
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth || 640
+    canvas.height = video.videoHeight || 480
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-
-    const count = videos.length
-    const cols = Math.ceil(Math.sqrt(count))
-    const rows = Math.ceil(count / cols)
-    const cellW = canvasW / cols
-    const cellH = canvasH / rows
-
-    videos.forEach((video, index) => {
-      const col = index % cols
-      const row = Math.floor(index / cols)
-      const cx = col * cellW
-      const cy = row * cellH
-
-      const vidW = video.videoWidth
-      const vidH = video.videoHeight
-      const vidAspect = vidW / vidH
-      const cellAspect = cellW / cellH
-      
-      // Calculate object-cover clipping mathematics to prevent image stretching
-      let drawW = vidW, drawH = vidH, sx = 0, sy = 0
-      if (vidAspect > cellAspect) {
-        drawW = vidH * cellAspect
-        sx = (vidW - drawW) / 2
-      } else {
-        drawH = vidW / cellAspect
-        sy = (vidH - drawH) / 2
-      }
-
-      ctx.save()
-      ctx.translate(cx + cellW, cy)
-      ctx.scale(-1, 1) 
-      ctx.drawImage(video, sx, sy, drawW, drawH, 0, 0, cellW, cellH)
-      ctx.restore()
-    })
-
+    
+    ctx.translate(canvas.width, 0)
+    ctx.scale(-1, 1)
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
     framesRef.current = [
-      ...framesRef.current.filter((f) => f.shotIndex !== shotIndex),
+      ...framesRef.current.filter(
+        (f) => !(f.participantId === 'you' && f.shotIndex === shotIndex),
+      ),
       { participantId: 'you', shotIndex, dataUrl },
     ]
     
@@ -252,9 +217,8 @@ export function BoothView({
     ) {
       capturedShotsRef.current.add(shotIndex)
       
-      if (plan.instigatorId === peerId || mode === 'solo') {
-        captureMergedFrame(shotIndex)
-      }
+      // FIX: BOTH Host and Guest run this simultaneously to take their own photo
+      captureLocalFrame(shotIndex)
 
       setFlash(true)
       setTimeout(() => setFlash(false), 250)
@@ -280,7 +244,7 @@ export function BoothView({
     const newPlan: CountdownMessage = {
       instigatorId: peerId,
       totalShots: shots,
-      delayMs: 1500, // Send relative delay
+      delayMs: 1500, // Send relative delay for perfect synchronization
       intervalMs: SHOT_INTERVAL_MS,
       layoutId: layout,
       backgroundId: background.id
@@ -288,7 +252,7 @@ export function BoothView({
     
     if (mode === 'room') {
       broadcastCountdown(newPlan)
-      handleCountdown(newPlan) // Trigger locally immediately 
+      handleCountdown(newPlan) 
     } else {
       handleCountdown(newPlan)
     }
