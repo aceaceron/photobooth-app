@@ -30,9 +30,9 @@ export type FrameMessage = {
 export type CountdownMessage = {
   instigatorId: string 
   totalShots: number
-  delayMs: number // Replaced absolute epoch with relative delay to fix clock drift
+  delayMs: number
   intervalMs: number
-  layoutId: string // Used to sync guests to host's design
+  layoutId: string
   backgroundId: string 
 }
 
@@ -57,6 +57,9 @@ type UseRoomConnectionArgs = {
   enabled: boolean
   onFrame?: (peerId: string, msg: FrameMessage) => void
   onCountdown?: (msg: CountdownMessage) => void
+  onChat?: (msg: { sender: string, text: string, isAction?: boolean }) => void
+  onSyncFilters?: (filters: any) => void
+  onFinalize?: () => void
 }
 
 function generateUUID(): string {
@@ -77,12 +80,13 @@ export function useRoomConnection({
   enabled,
   onFrame,
   onCountdown,
+  onChat,
+  onSyncFilters,
+  onFinalize
 }: UseRoomConnectionArgs) {
   const supabase = useMemoClient()
   const [peerId] = useState(() => generateUUID())
-  const [remotePeers, setRemotePeers] = useState<Map<string, RemotePeer>>(
-    new Map(),
-  )
+  const [remotePeers, setRemotePeers] = useState<Map<string, RemotePeer>>(new Map())
   const [full, setFull] = useState(false)
   const [channelStatus, setChannelStatus] = useState<
     'idle' | 'connecting' | 'subscribed' | 'error' | 'closed' | 'timed_out'
@@ -93,12 +97,21 @@ export function useRoomConnection({
   const channelRef = useRef<RealtimeChannel | null>(null)
   const peersRef = useRef<Map<string, PeerHandle>>(new Map())
   const localStreamRef = useRef<MediaStream | null>(localStream)
-  const onFrameRef = useRef(onFrame)
-  const onCountdownRef = useRef(onCountdown)
+  
+  // FIX: Restored the missing retryTimerRef
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   
+  const onFrameRef = useRef(onFrame)
+  const onCountdownRef = useRef(onCountdown)
+  const onChatRef = useRef(onChat)
+  const onSyncFiltersRef = useRef(onSyncFilters)
+  const onFinalizeRef = useRef(onFinalize)
+
   onFrameRef.current = onFrame
   onCountdownRef.current = onCountdown
+  onChatRef.current = onChat
+  onSyncFiltersRef.current = onSyncFilters
+  onFinalizeRef.current = onFinalize
   localStreamRef.current = localStream
 
   const MAX_RETRIES = 4
@@ -134,11 +147,12 @@ export function useRoomConnection({
       dc.onerror = (ev) => logEvent('webrtc', `data channel error with ${id.slice(0, 8)}`, ev, 'error')
       dc.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as FrameMessage
+          const msg = JSON.parse(ev.data)
           if (msg.type === 'frame') onFrameRef.current?.(id, msg)
-        } catch {
-          // ignore malformed payloads
-        }
+          else if (msg.type === 'chat') onChatRef.current?.(msg)
+          else if (msg.type === 'sync_filters') onSyncFiltersRef.current?.(msg.filters)
+          else if (msg.type === 'finalize') onFinalizeRef.current?.()
+        } catch {}
       }
       const handle = peersRef.current.get(id)
       if (handle) handle.dataChannel = dc
@@ -259,9 +273,7 @@ export function useRoomConnection({
         } else if (payload.kind === 'ice-candidate') {
           try {
             await pc.addIceCandidate(payload.data as RTCIceCandidateInit)
-          } catch (err) {
-            // benign if it arrives before remote description is set
-          }
+          } catch (err) {}
         }
       } catch (err) {
         console.error('signal handling error', err)
@@ -359,8 +371,7 @@ export function useRoomConnection({
     })
   }, [])
 
-  const sendFrameToAll = useCallback((shotIndex: number, dataUrl: string) => {
-    const msg: FrameMessage = { type: 'frame', shotIndex, dataUrl }
+  const broadcastData = useCallback((msg: any) => {
     const payload = JSON.stringify(msg)
     peersRef.current.forEach((handle) => {
       if (handle.dataChannel?.readyState === 'open') {
@@ -368,6 +379,10 @@ export function useRoomConnection({
       }
     })
   }, [])
+
+  const sendFrameToAll = useCallback((shotIndex: number, dataUrl: string) => {
+    broadcastData({ type: 'frame', shotIndex, dataUrl })
+  }, [broadcastData])
 
   const setMicEnabled = useCallback((on: boolean) => {
     localStreamRef.current
@@ -383,6 +398,7 @@ export function useRoomConnection({
     reconnectAttempt,
     broadcastCountdown,
     sendFrameToAll,
+    broadcastData,
     setMicEnabled,
   }
 }

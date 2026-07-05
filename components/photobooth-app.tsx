@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { AuthDialog } from '@/components/auth-dialog'
 import { BoothView } from '@/components/booth-view'
-import { EditView } from '@/components/edit-view'
 import { JoinNameDialog } from '@/components/join-name-dialog'
 import { LandingView } from '@/components/landing-view'
 import { SetupView } from '@/components/setup-view'
@@ -21,9 +20,7 @@ import {
   sanitizeRoomCode,
   type AppView,
   type BackgroundOption,
-  type CapturedFrame,
   type LayoutId,
-  type Participant,
 } from '@/lib/photobooth'
 
 const GUEST_NAME_KEY = 'snapory-guest-name'
@@ -55,7 +52,6 @@ export function PhotoboothApp({
   const [joinDialogOpen, setJoinDialogOpen] = useState(false)
   const guestInitRef = useRef(false)
 
-  // FIX: Restore Host privileges if the page reloaded after navigation or refresh
   useEffect(() => {
     if (initialRoomCode && typeof window !== 'undefined') {
       const isHostOfThisRoom = sessionStorage.getItem(`snapory_host_${initialRoomCode}`) === 'true'
@@ -88,16 +84,11 @@ export function PhotoboothApp({
     setJoinDialogOpen(true)
   }, [mode, loading, user])
 
-  const [shootResult, setShootResult] = useState<{
-    frames: CapturedFrame[]
-    participants: Participant[]
-  } | null>(null)
 
   function handleCreateRoom() {
     logEvent('nav', 'Create Room tapped')
     const code = generateRoomCode()
     
-    // FIX: Save a host ticket in sessionStorage so it persists across the Next.js navigation remount
     if (typeof window !== 'undefined') {
       sessionStorage.setItem(`snapory_host_${code}`, 'true')
     }
@@ -131,7 +122,6 @@ export function PhotoboothApp({
 
   function handleLeave() {
     setView('landing')
-    setShootResult(null)
     router.push('/')
   }
 
@@ -216,6 +206,7 @@ export function PhotoboothApp({
               />
             )}
 
+            {/* BoothView internally mounts EditView upon capture completion, keeping WebRTC alive */}
             {view === 'booth' && (
               <BoothView
                 mode={mode}
@@ -230,22 +221,6 @@ export function PhotoboothApp({
                   const bg = BACKGROUNDS.find(b => b.id === syncedBgId)
                   if (bg) setBackground(bg)
                 }}
-                onComplete={(frames, participants) => {
-                  setShootResult({ frames, participants })
-                  setView('edit')
-                }}
-              />
-            )}
-
-            {view === 'edit' && shootResult && (
-              <EditView
-                isHost={isHost}
-                layout={layout}
-                background={background}
-                participants={shootResult.participants}
-                frames={shootResult.frames}
-                onRetake={() => setView('booth')}
-                onDone={handleLeave}
               />
             )}
           </>

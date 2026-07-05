@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Modal } from '@/components/modal'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { EditView } from '@/components/edit-view'
 import {
   LAYOUTS,
   colorForId,
@@ -22,6 +23,7 @@ import {
   type LayoutId,
   type BackgroundOption,
   type Participant,
+  type FilterState,
 } from '@/lib/photobooth'
 import {
   MAX_PEERS,
@@ -38,7 +40,6 @@ type BoothViewProps = {
   isHost: boolean 
   onLeave: () => void
   onSync?: (layoutId: string, backgroundId: string) => void
-  onComplete: (frames: CapturedFrame[], participants: Participant[]) => void
 }
 
 const COUNTDOWN_MS = 3000
@@ -56,8 +57,7 @@ export function BoothView({
   displayName,
   isHost,
   onLeave,
-  onSync,
-  onComplete,
+  onSync
 }: BoothViewProps) {
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
 
@@ -73,22 +73,30 @@ export function BoothView({
   const [flash, setFlash] = useState(false)
   const [capturing, setCapturing] = useState(false)
 
+  // Editing & Recording State
+  const [shootResult, setShootResult] = useState<{frames: CapturedFrame[], participants: Participant[]} | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [chatMessages, setChatMessages] = useState<{sender: string, text: string, isAction?: boolean}[]>([])
+  const [syncedFilters, setSyncedFilters] = useState<FilterState | null>(null)
+  const [hostFinalized, setHostFinalized] = useState(false)
+
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const framesRef = useRef<CapturedFrame[]>([])
   const capturedShotsRef = useRef<Set<number>>(new Set())
   const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const combinedCanvasRef = useRef<HTMLCanvasElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordedChunksRef = useRef<Blob[]>([])
+
   const localColor = colorForId(displayName + roomCode)
 
-  const handleFrame = useCallback(
-    (senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
+  const handleFrame = useCallback((senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
       framesRef.current = [
         ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
         { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
       ]
-    },
-    [],
-  )
+  }, [])
 
   const handleCountdown = useCallback((msg: CountdownMessage) => {
     capturedShotsRef.current = new Set()
@@ -103,14 +111,16 @@ export function BoothView({
     })
   }, [onSync])
 
+  const handleChat = useCallback((msg: any) => setChatMessages(prev => [...prev, msg]), [])
+  const handleSyncFilters = useCallback((filters: any) => setSyncedFilters(filters), [])
+  const handleFinalize = useCallback(() => setHostFinalized(true), [])
+
   const {
     peerId,
     remotePeers,
-    roomFull,
-    channelStatus,
-    reconnectAttempt,
     broadcastCountdown,
     sendFrameToAll,
+    broadcastData,
     setMicEnabled,
   } = useRoomConnection({
     roomCode,
@@ -119,10 +129,11 @@ export function BoothView({
     enabled: mode === 'room' && granted,
     onFrame: handleFrame,
     onCountdown: handleCountdown,
+    onChat: handleChat,
+    onSyncFilters: handleSyncFilters,
+    onFinalize: handleFinalize
   })
 
-  // FIX: Create a deterministic order using peerId so the grid layout 
-  // is mathematically identical for both Host and Guest
   const participants: Participant[] = [
     { id: peerId, name: displayName, isYou: true, color: localColor },
     ...Array.from(remotePeers.values())
@@ -172,6 +183,62 @@ export function BoothView({
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
 
+  const drawVideoLoop = useCallback(() => {
+    if (mediaRecorderRef.current?.state !== 'recording') return
+    const canvas = combinedCanvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (ctx && canvas) {
+        const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
+        if (videos.length > 0) {
+            ctx.fillStyle = '#000'
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+            const count = videos.length
+            const cols = Math.ceil(Math.sqrt(count))
+            const rows = Math.ceil(count / cols)
+            const cellW = canvas.width / cols
+            const cellH = canvas.height / rows
+            videos.forEach((video, index) => {
+                const col = index % cols
+                const row = Math.floor(index / cols)
+                const cx = col * cellW
+                const cy = row * cellH
+                ctx.save()
+                ctx.translate(cx + cellW, cy)
+                ctx.scale(-1, 1)
+                ctx.drawImage(video, 0, 0, cellW, cellH)
+                ctx.restore()
+            })
+        }
+    }
+    requestAnimationFrame(drawVideoLoop)
+  }, [])
+
+  function startVideoRecording() {
+    const canvas = combinedCanvasRef.current
+    if (!canvas) return
+    try {
+      const stream = canvas.captureStream(30)
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      recordedChunksRef.current = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data) }
+      recorder.onstop = () => {
+          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
+          setVideoUrl(URL.createObjectURL(blob))
+      }
+      recorder.start()
+      mediaRecorderRef.current = recorder
+      requestAnimationFrame(drawVideoLoop)
+    } catch (err) {
+      console.error("Video recording failed", err)
+    }
+  }
+
+  function stopVideoRecording() {
+    if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop()
+    }
+  }
+
   function captureLocalFrame(shotIndex: number) {
     const video = localVideoRef.current
     if (!video || video.readyState < 2) return
@@ -189,10 +256,7 @@ export function BoothView({
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
     framesRef.current = [
-      ...framesRef.current.filter(
-        // FIX: Match the new dynamic peerId to ensure the EditView binds this photo to you
-        (f) => !(f.participantId === peerId && f.shotIndex === shotIndex),
-      ),
+      ...framesRef.current.filter((f) => !(f.participantId === peerId && f.shotIndex === shotIndex)),
       { participantId: peerId, shotIndex, dataUrl },
     ]
     
@@ -211,29 +275,22 @@ export function BoothView({
     const rawIndex = Math.floor(elapsed / plan.intervalMs)
     const shotIndex = Math.min(Math.max(rawIndex, 0), plan.totalShots - 1)
 
-    if (
-      elapsed >= shotIndex * plan.intervalMs + COUNTDOWN_MS &&
-      !capturedShotsRef.current.has(shotIndex) &&
-      elapsed >= 0
-    ) {
+    if (elapsed >= shotIndex * plan.intervalMs + COUNTDOWN_MS && !capturedShotsRef.current.has(shotIndex) && elapsed >= 0) {
       capturedShotsRef.current.add(shotIndex)
-      
       captureLocalFrame(shotIndex)
-
       setFlash(true)
       setTimeout(() => setFlash(false), 250)
     }
 
-    const done =
-      elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS &&
-      capturedShotsRef.current.size >= plan.totalShots
+    const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS && capturedShotsRef.current.size >= plan.totalShots
       
     if (done && !finalizeTimerRef.current) {
+      stopVideoRecording()
       finalizeTimerRef.current = setTimeout(() => {
         finalizeTimerRef.current = null
         setPlan(null)
         setCapturing(false)
-        onComplete(framesRef.current, participants)
+        setShootResult({ frames: framesRef.current, participants })
       }, FINALIZE_GRACE_MS)
     }
   }, [nowTick, plan])
@@ -250,6 +307,8 @@ export function BoothView({
       backgroundId: background.id
     }
     
+    startVideoRecording()
+
     if (mode === 'room') {
       broadcastCountdown(newPlan)
       handleCountdown(newPlan) 
@@ -262,33 +321,48 @@ export function BoothView({
     if (!plan) return null
     const elapsed = Date.now() - plan.startAtEpochMs
     if (elapsed < 0) return 3 
-    const shotIndex = Math.min(
-      Math.max(Math.floor(elapsed / plan.intervalMs), 0),
-      plan.totalShots - 1,
-    )
+    const shotIndex = Math.min(Math.max(Math.floor(elapsed / plan.intervalMs), 0), plan.totalShots - 1)
     const timeIntoShot = elapsed - shotIndex * plan.intervalMs
     if (timeIntoShot >= COUNTDOWN_MS) return null
     return Math.max(1, Math.ceil((COUNTDOWN_MS - timeIntoShot) / 1000))
   })()
 
-  const currentShotIndex = plan
-    ? Math.min(
-        Math.max(
-          Math.floor((Date.now() - plan.startAtEpochMs) / plan.intervalMs),
-          0,
-        ),
-        plan.totalShots - 1,
-      )
-    : 0
+  const currentShotIndex = plan ? Math.min(Math.max(Math.floor((Date.now() - plan.startAtEpochMs) / plan.intervalMs), 0), plan.totalShots - 1) : 0
 
-  const gridCols =
-    participants.length <= 1
-      ? 'grid-cols-1'
-      : participants.length === 2
-        ? 'grid-cols-1 sm:grid-cols-2'
-        : participants.length <= 4
-          ? 'grid-cols-2'
-          : 'grid-cols-2 sm:grid-cols-3'
+  if (shootResult) {
+    return (
+      <EditView
+        isHost={isHost}
+        layout={layout}
+        background={background}
+        participants={shootResult.participants}
+        frames={shootResult.frames}
+        videoUrl={videoUrl}
+        chatMessages={chatMessages}
+        onSendMessage={(text, isAction) => {
+          const msg = { sender: displayName, text, isAction }
+          handleChat(msg)
+          broadcastData({ type: 'chat', ...msg })
+        }}
+        syncedFilters={syncedFilters}
+        onHostFilterUpdate={(filters) => broadcastData({ type: 'sync_filters', filters })}
+        hostFinalized={hostFinalized}
+        onHostFinalize={() => {
+          setHostFinalized(true)
+          broadcastData({ type: 'finalize' })
+        }}
+        onRetake={() => {
+           setShootResult(null)
+           setVideoUrl(null)
+           setHostFinalized(false)
+           setChatMessages([])
+        }}
+        onDone={onLeave}
+      />
+    )
+  }
+
+  const gridCols = participants.length <= 1 ? 'grid-cols-1' : participants.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : participants.length <= 4 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
@@ -299,8 +373,7 @@ export function BoothView({
             {mode === 'room' ? `Room /r/${roomCode}` : 'Solo shoot'}
           </span>
           <span className="hidden text-sm text-muted-foreground sm:inline">
-            {participants.length} {participants.length === 1 ? 'person' : 'people'} ·{' '}
-            {shots} shots
+            {participants.length} {participants.length === 1 ? 'person' : 'people'} · {shots} shots
           </span>
         </div>
         <Button variant="destructive" size="sm" onClick={onLeave}>
@@ -310,18 +383,9 @@ export function BoothView({
 
       <div className={cn('grid gap-3', gridCols)}>
         {participants.map((p) => (
-          <div
-            key={p.id}
-            className="relative aspect-video overflow-hidden rounded-3xl border border-border/60 bg-muted"
-          >
+          <div key={p.id} className="relative aspect-video overflow-hidden rounded-3xl border border-border/60 bg-muted">
             {p.isYou && granted ? (
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="absolute inset-0 size-full scale-x-[-1] object-cover"
-              />
+              <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 size-full scale-x-[-1] object-cover" />
             ) : !p.isYou ? (
               <RemoteVideoTile stream={remotePeers.get(p.id)?.stream ?? null} />
             ) : null}
@@ -337,60 +401,35 @@ export function BoothView({
 
             {plan && currentShotIndex >= 0 && displayCount !== null && (
               <div className="absolute inset-0 flex items-center justify-center bg-foreground/30 backdrop-blur-[2px]">
-                <span className="text-6xl font-bold text-background drop-shadow-lg">
-                  {displayCount}
-                </span>
+                <span className="text-6xl font-bold text-background drop-shadow-lg">{displayCount}</span>
               </div>
             )}
           </div>
         ))}
       </div>
 
+      <canvas ref={combinedCanvasRef} width={1280} height={720} className="hidden" />
+
       <div className="mt-6 flex flex-col items-center justify-center gap-4">
         <div className="flex items-center justify-center gap-6">
-          <button
-            type="button"
-            onClick={() => setMicOn((m) => !m)}
-            className={cn(
-              'flex size-12 items-center justify-center rounded-full border transition-colors',
-              micOn
-                ? 'border-border bg-card hover:bg-muted'
-                : 'border-destructive/40 bg-destructive/10 text-destructive',
-            )}
-          >
+          <button type="button" onClick={() => setMicOn((m) => !m)} className={cn('flex size-12 items-center justify-center rounded-full border transition-colors', micOn ? 'border-border bg-card hover:bg-muted' : 'border-destructive/40 bg-destructive/10 text-destructive')}>
             {micOn ? <Mic className="size-5" /> : <MicOff className="size-5" />}
           </button>
-
-          <button
-            type="button"
-            onClick={startCapture}
-            disabled={capturing || !granted || (!isHost && mode === 'room')}
-            className="group relative flex size-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
-          >
+          <button type="button" onClick={startCapture} disabled={capturing || !granted || (!isHost && mode === 'room')} className="group relative flex size-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100">
             <span className="absolute inset-1.5 rounded-full border-4 border-primary-foreground/80" />
             <Camera className="size-7" />
           </button>
-
           <div className="flex w-24 items-center gap-1 rounded-full border border-border bg-card px-3 py-2 text-sm">
             <Timer className="size-4 text-primary" />
             <span className="font-medium">3s</span>
           </div>
         </div>
-
         <p className="text-center text-sm font-medium text-muted-foreground">
-          {!granted
-            ? 'Allow camera access to start shooting.'
-            : capturing
-              ? `Taking shot ${currentShotIndex + 1} of ${shots}…`
-              : !isHost && mode === 'room'
-                ? 'Waiting for Host to start the photoshoot...'
-                : `Tap the shutter to capture ${shots} ${shots === 1 ? 'photo' : 'photos'}.`}
+          {!granted ? 'Allow camera access to start shooting.' : capturing ? `Taking shot ${currentShotIndex + 1} of ${shots}…` : !isHost && mode === 'room' ? 'Waiting for Host to start the photoshoot...' : `Tap the shutter to capture ${shots} ${shots === 1 ? 'photo' : 'photos'}.`}
         </p>
       </div>
 
-      {flash && (
-        <div className="pointer-events-none fixed inset-0 z-50 bg-background animate-out fade-out duration-300" />
-      )}
+      {flash && <div className="pointer-events-none fixed inset-0 z-50 bg-background animate-out fade-out duration-300" />}
 
       <Modal open={permissionOpen} onClose={() => setPermissionOpen(false)}>
         <div className="flex flex-col items-center text-center">

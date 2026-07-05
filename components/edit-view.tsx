@@ -1,7 +1,7 @@
 'use client'
 
 import { ArrowLeft, Check, Download, RotateCcw, Sparkles } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { Photostrip } from '@/components/photostrip'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -28,6 +28,13 @@ type EditViewProps = {
   background: BackgroundOption
   participants: Participant[]
   frames: CapturedFrame[]
+  videoUrl: string | null
+  chatMessages: {sender: string, text: string, isAction?: boolean}[]
+  onSendMessage: (text: string, isAction?: boolean) => void
+  syncedFilters: FilterState | null
+  onHostFilterUpdate: (filters: FilterState) => void
+  hostFinalized: boolean
+  onHostFinalize: () => void
   onRetake: () => void
   onDone: () => void
 }
@@ -38,6 +45,13 @@ export function EditView({
   background,
   participants,
   frames,
+  videoUrl,
+  chatMessages,
+  onSendMessage,
+  syncedFilters,
+  onHostFilterUpdate,
+  hostFinalized,
+  onHostFinalize,
   onRetake,
   onDone,
 }: EditViewProps) {
@@ -46,6 +60,13 @@ export function EditView({
   const [exporting, setExporting] = useState(false)
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
   const filterCss = filterToCss(filters)
+
+  // Sync Guest UI to Host's changes
+  useEffect(() => {
+    if (!isHost && syncedFilters) {
+      setFilters(syncedFilters)
+    }
+  }, [isHost, syncedFilters])
 
   const shotFrames = useMemo(() => {
     return Array.from({ length: shots }, (_, shotIndex) =>
@@ -61,7 +82,14 @@ export function EditView({
   ))
 
   function update<K extends keyof FilterState>(key: K, value: FilterState[K]) {
-    setFilters((f) => ({ ...f, [key]: value }))
+    const next = { ...filters, [key]: value }
+    setFilters(next)
+    if (isHost) onHostFilterUpdate(next)
+  }
+
+  function handleResetFilters() {
+    setFilters(DEFAULT_FILTERS)
+    if (isHost) onHostFilterUpdate(DEFAULT_FILTERS)
   }
 
   async function saveToDevice() {
@@ -137,9 +165,7 @@ export function EditView({
           ctx.fillStyle = '#fdf3ec'
         }
       } else {
-        ctx.fillStyle = background.swatch.startsWith('linear')
-          ? '#fdf3ec'
-          : background.swatch
+        ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
       }
       if (!(background.id === 'custom')) ctx.fillRect(0, 0, W, H)
 
@@ -181,9 +207,7 @@ export function EditView({
       ctx.textAlign = 'center'
       ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
 
-      const blob: Blob | null = await new Promise((resolve) =>
-        canvas.toBlob(resolve, 'image/png'),
-      )
+      const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
       if (!blob) return
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -199,10 +223,18 @@ export function EditView({
     }
   }
 
+  function downloadVideo() {
+    if (!videoUrl) return
+    const a = document.createElement('a')
+    a.href = videoUrl
+    a.download = `snapory-pose-video-${Date.now()}.webm`
+    a.click()
+  }
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
       <div className="mb-6">
-        {isHost && (
+        {isHost && !hostFinalized && (
           <Button variant="ghost" size="sm" onClick={onRetake} className="-ml-2">
             <ArrowLeft className="size-4" /> Retake
           </Button>
@@ -215,21 +247,55 @@ export function EditView({
         </p>
       </div>
 
-      <div className={cn("grid gap-8", isHost ? "lg:grid-cols-[1fr_360px]" : "grid-cols-1 max-w-3xl mx-auto")}>
-        <div className="flex items-start justify-center rounded-3xl border border-border/60 bg-muted/30 p-6 sm:p-10">
-          <Photostrip
-            layout={layout}
-            backgroundClass={background.className}
-            backgroundStyle={backgroundStyle(background)}
-            filterCss={filterCss}
-            cells={cells}
-            participantCount={participants.length}
-            className={cn('w-full max-w-[220px]', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
-          />
+      <div className={cn("grid gap-8", isHost || chatMessages.length > 0 ? "lg:grid-cols-[1fr_380px]" : "grid-cols-1 max-w-3xl mx-auto")}>
+        <div className="flex flex-col items-center gap-6">
+          <div className="flex items-start justify-center rounded-3xl border border-border/60 bg-muted/30 p-6 sm:p-10 w-full">
+            <Photostrip
+              layout={layout}
+              backgroundClass={background.className}
+              backgroundStyle={backgroundStyle(background)}
+              filterCss={filterCss}
+              cells={cells}
+              participantCount={participants.length}
+              className={cn('w-full max-w-[220px]', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
+            />
+          </div>
+          {videoUrl && (
+            <div className="w-full max-w-[320px] rounded-3xl overflow-hidden border border-border/60 shadow-lg bg-black">
+              <p className="text-xs text-center py-2 text-white/50 bg-zinc-900 font-semibold tracking-widest uppercase">Pose Video</p>
+              <video src={videoUrl} controls autoPlay loop className="w-full" />
+            </div>
+          )}
         </div>
 
-        <div className="flex flex-col gap-6 w-full max-w-sm mx-auto">
-          {isHost && (
+        <div className="flex flex-col gap-6 w-full max-w-md mx-auto">
+          {/* Chat & Suggestions Panel */}
+          {participants.length > 1 && (!hostFinalized || chatMessages.length > 0) && (
+             <div className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur flex flex-col h-56">
+                <h2 className="mb-2 text-sm font-semibold uppercase text-muted-foreground flex items-center gap-2">
+                  Chat & Suggestions
+                </h2>
+                <div className="flex-1 overflow-y-auto space-y-2 mb-3 pr-2 border-b border-border/50 pb-2">
+                  {chatMessages.map((c, i) => (
+                      <div key={i} className="text-sm">
+                        <span className="font-bold text-primary">{c.sender}: </span>
+                        <span className={c.isAction ? "italic text-muted-foreground" : "text-foreground"}>{c.text}</span>
+                      </div>
+                  ))}
+                  {chatMessages.length === 0 && <div className="text-sm text-muted-foreground italic opacity-50">No messages yet...</div>}
+                </div>
+                {!hostFinalized && (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    <Button variant="secondary" size="sm" className="shrink-0" onClick={() => onSendMessage('Make it brighter! ☀️', true)}>Brighter</Button>
+                    <Button variant="secondary" size="sm" className="shrink-0" onClick={() => onSendMessage('Make it darker 🌙', true)}>Darker</Button>
+                    <Button variant="secondary" size="sm" className="shrink-0" onClick={() => onSendMessage('Try Vintage 🎞️', true)}>Vintage</Button>
+                  </div>
+                )}
+             </div>
+          )}
+
+          {/* Edit Controls (Host Only) */}
+          {isHost && !hostFinalized && (
             <>
               <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">
                 <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -246,10 +312,10 @@ export function EditView({
               <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">
                 <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Filters</h2>
                 <div className="flex flex-wrap gap-2">
-                  <PresetToggle active={!filters.vintage && !filters.bw} onClick={() => setFilters(DEFAULT_FILTERS)} label="Original" />
+                  <PresetToggle active={!filters.vintage && !filters.bw} onClick={() => update('vintage', false)} label="Original" />
                   <PresetToggle active={filters.vintage} onClick={() => update('vintage', !filters.vintage)} label="Vintage" />
                   <PresetToggle active={filters.bw} onClick={() => update('bw', !filters.bw)} label="B&W" />
-                  <button type="button" onClick={() => setFilters(DEFAULT_FILTERS)} className="ml-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground">
+                  <button type="button" onClick={handleResetFilters} className="ml-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground">
                     <RotateCcw className="size-3.5" /> Reset
                   </button>
                 </div>
@@ -258,10 +324,30 @@ export function EditView({
           )}
 
           <div className="flex flex-col gap-2">
-            <Button size="lg" className="h-12 w-full text-sm" onClick={saveToDevice} disabled={exporting}>
-              {saved ? <><Check className="size-4" /> Saved to device</> : exporting ? 'Exporting\u2026' : <><Download className="size-4" /> Save to device</>}
-            </Button>
-            <Button variant="outline" size="lg" className="h-11 w-full text-sm" onClick={onDone}>
+            {!isHost && !hostFinalized ? (
+               <div className="flex flex-col items-center justify-center p-4 bg-muted/30 rounded-2xl border text-center animate-pulse">
+                  <Sparkles className="size-6 text-primary mb-2" />
+                  <p className="font-semibold text-sm">Waiting for Host to finalize edits...</p>
+               </div>
+            ) : (
+              <>
+                {isHost && !hostFinalized && (
+                  <Button size="lg" className="h-12 w-full text-sm bg-green-600 hover:bg-green-700 text-white mb-4" onClick={onHostFinalize}>
+                    <Check className="size-4 mr-2" /> Done Editing
+                  </Button>
+                )}
+                <Button size="lg" className="h-12 w-full text-sm" onClick={saveToDevice} disabled={exporting}>
+                  {saved ? <><Check className="size-4" /> Saved to device</> : exporting ? 'Exporting\u2026' : <><Download className="size-4" /> Save Photo Strip</>}
+                </Button>
+                {videoUrl && (
+                  <Button variant="secondary" size="lg" className="h-12 w-full text-sm" onClick={downloadVideo}>
+                    <Download className="size-4" /> Save Pose Video
+                  </Button>
+                )}
+              </>
+            )}
+
+            <Button variant="outline" size="lg" className="h-11 w-full text-sm mt-4" onClick={onDone}>
               Back to home
             </Button>
           </div>
