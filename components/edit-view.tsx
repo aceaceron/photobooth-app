@@ -8,7 +8,6 @@ import { cn } from '@/lib/utils'
 import {
   drawImageCover,
   loadImage,
-  mosaicRects,
   roundRect,
 } from '@/lib/canvas-compose'
 import {
@@ -71,15 +70,23 @@ export function EditView({
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d')
       if (!ctx) return
-      const W = 900
+      
+      let W = 900
       const pad = 40
       const gap = 28
       let cellDefs: { x: number; y: number; w: number; h: number }[] = []
       let H = 0
 
       if (layout === 'strip') {
+        if (participants.length >= 3) W = 1200
         const cw = W - pad * 2
-        const ch = cw * 0.75
+        
+        let ratio = 0.75
+        if (participants.length === 2) ratio = 2 / 3
+        if (participants.length === 3) ratio = 9 / 21
+        if (participants.length >= 4) ratio = 9 / 16
+        
+        const ch = cw * ratio
         H = pad * 2 + ch * 4 + gap * 3 + 56
         cellDefs = [0, 1, 2, 3].map((i) => ({
           x: pad,
@@ -148,11 +155,21 @@ export function EditView({
           ctx.fillStyle = '#e5e0d8'
           ctx.fillRect(c.x, c.y, c.w, c.h)
         } else {
-          const rects = mosaicRects(dataUrls.length, c.w, c.h)
+          const len = dataUrls.length
+          const cols = len === 1 ? 1 : len === 3 ? 3 : 2
+          const rows = Math.ceil(len / cols)
+          const gapPx = 2
+          
+          const subW_gross = (c.w - (cols - 1) * gapPx) / cols
+          const subH_gross = (c.h - (rows - 1) * gapPx) / rows
+
           const imgs = await Promise.all(dataUrls.map(loadImage))
           imgs.forEach((img, idx) => {
-            const r = rects[idx]
-            drawImageCover(ctx, img, c.x + r.x, c.y + r.y, r.w, r.h)
+            const col = idx % cols
+            const row = Math.floor(idx / cols)
+            const dx = c.x + col * (subW_gross + gapPx)
+            const dy = c.y + row * (subH_gross + gapPx)
+            drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
           })
         }
         ctx.filter = 'none'
@@ -206,7 +223,8 @@ export function EditView({
             backgroundStyle={backgroundStyle(background)}
             filterCss={filterCss}
             cells={cells}
-            className={cn('w-full max-w-[220px]', layout === 'strip' && 'max-w-[150px]')}
+            participantCount={participants.length}
+            className={cn('w-full max-w-[220px]', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
           />
         </div>
 
@@ -261,7 +279,8 @@ function ShotMosaic({
   filterCss: string
 }) {
   if (dataUrls.length === 0) return <div className="absolute inset-0 bg-gradient-to-br from-foreground/5 to-foreground/20" />
-  const cols = dataUrls.length <= 1 ? 1 : dataUrls.length <= 4 ? 2 : 3
+  
+  const cols = dataUrls.length === 1 ? 1 : dataUrls.length === 3 ? 3 : 2
   return (
     <div className="absolute inset-0 grid gap-0.5" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, filter: filterCss }}>
       {dataUrls.map((src, i) => (
@@ -286,6 +305,7 @@ function Slider({
     </label>
   )
 }
+
 function PresetToggle({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button type="button" onClick={onClick} className={cn('rounded-full border px-4 py-1.5 text-sm font-medium transition-colors', active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-muted')}>

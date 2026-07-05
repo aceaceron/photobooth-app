@@ -11,16 +11,19 @@ type PhotostripProps = {
   cells?: React.ReactNode[]
   showLogo?: boolean
   className?: string
+  participantCount?: number
 }
 
 function Cell({
   children,
   filterCss,
   className,
+  style,
 }: {
   children?: React.ReactNode
   filterCss?: string
   className?: string
+  style?: React.CSSProperties
 }) {
   return (
     <div
@@ -28,7 +31,7 @@ function Cell({
         'relative overflow-hidden rounded-md bg-foreground/10',
         className,
       )}
-      style={filterCss ? { filter: filterCss } : undefined}
+      style={{ ...(filterCss ? { filter: filterCss } : {}), ...style }}
     >
       {children ?? (
         <div className="absolute inset-0 bg-gradient-to-br from-foreground/5 to-foreground/20" />
@@ -45,8 +48,15 @@ export function Photostrip({
   cells = [],
   showLogo = true,
   className,
+  participantCount = 1,
 }: PhotostripProps) {
   const get = (i: number) => cells[i]
+
+  // Dynamically widen the strip cell to prevent aggressive side-cropping when multiple peers join
+  let stripRatio = 4 / 3
+  if (participantCount === 2) stripRatio = 3 / 2
+  if (participantCount === 3) stripRatio = 21 / 9
+  if (participantCount >= 4) stripRatio = 16 / 9
 
   return (
     <div
@@ -60,7 +70,7 @@ export function Photostrip({
       {layout === 'strip' && (
         <div className="flex flex-col gap-2">
           {[0, 1, 2, 3].map((i) => (
-            <Cell key={i} filterCss={filterCss} className="aspect-[4/3]">
+            <Cell key={i} filterCss={filterCss} className="w-full" style={{ aspectRatio: stripRatio }}>
               {get(i)}
             </Cell>
           ))}
