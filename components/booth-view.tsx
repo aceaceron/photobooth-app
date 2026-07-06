@@ -53,14 +53,14 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   const capturedShotsRef = useRef<Set<number>>(new Set())
   const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // WebRTC & Compositor specific refs
+  // Isolated Video Recording Refs
   const rawCanvasRef = useRef<HTMLCanvasElement>(null)
   const stripCanvasRef = useRef<HTMLCanvasElement>(null)
-  const rawRecorderRef = useRef<MediaRecorder | null>(null)
-  const rawChunksRef = useRef<Blob[]>([])
+  const rawRecordersRef = useRef<(MediaRecorder | null)[]>([])
+  const rawChunksRef = useRef<Blob[][]>([[], [], [], []])
+  const rAFRef = useRef<number | null>(null)
   
   const liveRecorderStartedRef = useRef(false)
-  const shotIntervalRef = useRef(SHOT_INTERVAL_MS)
   const layoutRef = useRef(layout)
   const backgroundRef = useRef(background)
   
@@ -145,14 +145,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     return () => {
       localStream?.getTracks().forEach((t) => t.stop())
       if (finalizeTimerRef.current) clearTimeout(finalizeTimerRef.current)
+      if (rAFRef.current) cancelAnimationFrame(rAFRef.current)
     }
   }, [localStream])
 
   useEffect(() => { setMicEnabled(micOn) }, [micOn, setMicEnabled])
 
-  // Draws the live webcam composite feed continuously to be recorded into a raw blob buffer
   const drawLiveLoop = useCallback(() => {
-    if (rawRecorderRef.current?.state !== 'recording') return
     const canvas = rawCanvasRef.current
     const ctx = canvas?.getContext('2d')
     if (!ctx || !canvas) return
@@ -181,51 +180,58 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       ctx.restore()
     })
 
-    requestAnimationFrame(drawLiveLoop)
+    rAFRef.current = requestAnimationFrame(drawLiveLoop)
   }, [])
 
-  function startRawRecording() {
+  function startShotRecording(index: number) {
     const canvas = rawCanvasRef.current
     if (!canvas) return
     canvas.width = 1280
     canvas.height = 720
 
+    if (!rAFRef.current) drawLiveLoop()
+
     const stream = canvas.captureStream(30)
     const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? { mimeType: 'video/mp4;codecs=h264' } : { mimeType: 'video/webm' }
     const recorder = new MediaRecorder(stream, options)
-    rawChunksRef.current = []
     
-    recorder.ondataavailable = e => { if (e.data.size > 0) rawChunksRef.current.push(e.data) }
-    recorder.onstop = async () => {
-      const blob = new Blob(rawChunksRef.current, { type: options.mimeType })
-      processVideoStrip(blob)
-    }
-    
+    rawChunksRef.current[index] = []
+    recorder.ondataavailable = e => { if (e.data.size > 0) rawChunksRef.current[index].push(e.data) }
     recorder.start()
-    rawRecorderRef.current = recorder
-    drawLiveLoop()
+    rawRecordersRef.current[index] = recorder
   }
 
-  // The core compiler: takes the raw timeline and outputs the simultaneous looping grid.
-  async function processVideoStrip(rawBlob: Blob) {
-    const url = URL.createObjectURL(rawBlob)
+  function stopShotRecording(index: number) {
+    const recorder = rawRecordersRef.current[index]
+    if (recorder && recorder.state === 'recording') {
+        recorder.stop()
+    }
+  }
+
+  // Compiler perfectly aligned with Edit View layout dimensions
+  async function compileVideoStrip() {
     const vids: HTMLVideoElement[] = []
+    const objectUrls: string[] = []
 
     for (let i = 0; i < shots; i++) {
-       const v = document.createElement('video')
-       v.src = url
-       v.muted = true
-       v.playsInline = true
-       v.crossOrigin = 'anonymous'
-       v.id = 'simultaneous-playback-vids'
-       v.load()
-       await new Promise<void>(res => {
-          v.onloadeddata = () => {
-             v.currentTime = (i * shotIntervalRef.current) / 1000
-             res()
-          }
-       })
-       vids.push(v)
+        const chunks = rawChunksRef.current[i] || []
+        const blob = new Blob(chunks, { type: MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? 'video/mp4' : 'video/webm' })
+        const url = URL.createObjectURL(blob)
+        objectUrls.push(url)
+
+        const v = document.createElement('video')
+        v.src = url
+        v.muted = true
+        v.playsInline = true
+        v.crossOrigin = 'anonymous'
+        v.id = 'simultaneous-playback-vids'
+        v.load()
+        
+        await new Promise<void>(res => {
+            v.onloadeddata = () => res()
+            v.onerror = () => res()
+        })
+        vids.push(v)
     }
 
     const canvas = stripCanvasRef.current
@@ -233,8 +239,8 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     if (!canvas || !ctx) return
 
     let W = 900
-    const pad = 48
-    const gap = 32
+    const pad = 40
+    const gap = 28
     let cellDefs: { x: number; y: number; w: number; h: number }[] = []
     let H = 0
     const currentLayout = layoutRef.current
@@ -249,17 +255,17 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
        if (pCount === 3) ratio = 9 / 21
        if (pCount >= 4) ratio = 9 / 16
        const ch = cw * ratio
-       H = pad * 2 + ch * 4 + gap * 3 + 70
+       H = pad * 2 + ch * 4 + gap * 3 + 56
        cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
     } else if (currentLayout === 'grid') {
        const cw = (W - pad * 2 - gap) / 2
-       H = pad * 2 + cw * 2 + gap + 70
+       H = pad * 2 + cw * 2 + gap + 56
        cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
     } else if (currentLayout === 'asymmetric') {
        const colWidth = (W - pad * 2 - gap * 2) / 3
        const bigW = colWidth * 2 + gap
        const bigH = colWidth * 3 + gap * 2
-       H = pad * 2 + bigH + 70
+       H = pad * 2 + bigH + 56
        cellDefs = [
           { x: pad, y: pad, w: bigW, h: bigH },
           { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
@@ -268,7 +274,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
        ]
     } else {
        const cw = W - pad * 2
-       H = pad * 2 + cw + 100
+       H = pad * 2 + cw + 90
        cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
     }
 
@@ -278,14 +284,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     const stream = canvas.captureStream(30)
     const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? {mimeType: 'video/mp4;codecs=h264'} : {mimeType: 'video/webm'}
     const stripRecorder = new MediaRecorder(stream, options)
-    const chunks: Blob[] = []
+    const stripChunks: Blob[] = []
     
-    stripRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+    stripRecorder.ondataavailable = e => { if (e.data.size > 0) stripChunks.push(e.data) }
     stripRecorder.onstop = () => {
-       const finalBlob = new Blob(chunks, { type: options.mimeType })
+       const finalBlob = new Blob(stripChunks, { type: options.mimeType })
        setVideoUrl(URL.createObjectURL(finalBlob))
-       vids.forEach(v => URL.revokeObjectURL(v.src))
-       URL.revokeObjectURL(url)
+       objectUrls.forEach(u => URL.revokeObjectURL(u))
     }
 
     stripRecorder.start()
@@ -303,7 +308,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
           vids.forEach(v => v.pause())
        }
 
-       if (elapsed >= COUNTDOWN_MS + 2000) { // 2s visual freeze effect
+       if (elapsed >= COUNTDOWN_MS + 2000) { 
           stripRecorder.stop()
           return
        }
@@ -321,18 +326,22 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
        cellDefs.forEach((c, i) => {
           if (i >= shots) return
           ctx.save()
-          roundRect(ctx, c.x, c.y, c.w, c.h, 24)
+          roundRect(ctx, c.x, c.y, c.w, c.h, 16) 
           ctx.clip()
-          drawImageCover(ctx, vids[i], c.x, c.y, c.w, c.h)
+          if (vids[i] && vids[i].readyState >= 2) {
+             drawImageCover(ctx, vids[i], c.x, c.y, c.w, c.h)
+          } else {
+             ctx.fillStyle = '#e5e0d8'
+             ctx.fillRect(c.x, c.y, c.w, c.h)
+          }
           ctx.restore()
        })
 
        const isDarkBg = currentBg.id === 'ink'
        ctx.fillStyle = isDarkBg ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
-       ctx.font = '600 22px monospace'
+       ctx.font = '600 18px monospace' 
        ctx.textAlign = 'center'
-       if ('letterSpacing' in ctx) { (ctx as any).letterSpacing = '0.3em' }
-       ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 32)
+       ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 28)
 
        requestAnimationFrame(drawStripFrame)
     }
@@ -359,6 +368,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       ...framesRef.current.filter((f) => !(f.participantId === peerId && f.shotIndex === shotIndex)),
       { participantId: peerId, shotIndex, dataUrl },
     ]
+    
     if (mode === 'room') sendFrameToAll(shotIndex, dataUrl)
   }
 
@@ -377,8 +387,18 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
 
     if (elapsed >= 0 && !liveRecorderStartedRef.current) {
        liveRecorderStartedRef.current = true
-       shotIntervalRef.current = plan.intervalMs
-       startRawRecording()
+       
+       // Schedule independent recording containers for each shot
+       for (let i = 0; i < plan.totalShots; i++) {
+          const shotStartMs = plan.startAtEpochMs + i * plan.intervalMs
+          const shotEndMs = shotStartMs + COUNTDOWN_MS
+          
+          const delayToStart = Math.max(0, shotStartMs - Date.now())
+          const delayToEnd = Math.max(0, shotEndMs - Date.now())
+          
+          setTimeout(() => startShotRecording(i), delayToStart)
+          setTimeout(() => stopShotRecording(i), delayToEnd)
+       }
     }
 
     const rawIndex = Math.floor(elapsed / plan.intervalMs)
@@ -394,17 +414,22 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS
     if (done && !finalizeTimerRef.current) {
       finalizeTimerRef.current = setTimeout(() => {
-        if (rawRecorderRef.current?.state === 'recording') rawRecorderRef.current.stop()
+        if (rAFRef.current) {
+            cancelAnimationFrame(rAFRef.current)
+            rAFRef.current = null
+        }
+        compileVideoStrip()
         finalizeTimerRef.current = null
         setPlan(null)
         setCapturing(false)
-        setShootResult({ frames: framesRef.current, participants })
+        setShootResult({ frames: framesRef.current, participants: participantsRef.current })
       }, 500)
     }
   }, [nowTick, plan])
 
   function startCapture() {
     if (capturing || !granted || (!isHost && mode === 'room')) return
+    
     const newPlan: CountdownMessage = {
       instigatorId: peerId,
       totalShots: shots,
@@ -413,6 +438,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       layoutId: layout,
       backgroundId: background.id
     }
+
     if (mode === 'room') {
       broadcastCountdown(newPlan)
       handleCountdown(newPlan) 

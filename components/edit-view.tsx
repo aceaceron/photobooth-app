@@ -145,8 +145,8 @@ export function EditView({
       if (!ctx) return
       
       let W = 900
-      const pad = 48
-      const gap = 32
+      const pad = 40
+      const gap = 28
       let cellDefs: { x: number; y: number; w: number; h: number }[] = []
       let H = 0
 
@@ -158,17 +158,17 @@ export function EditView({
         if (participants.length === 3) ratio = 9 / 21
         if (participants.length >= 4) ratio = 9 / 16
         const ch = cw * ratio
-        H = pad * 2 + ch * 4 + gap * 3 + 70
+        H = pad * 2 + ch * 4 + gap * 3 + 56
         cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
       } else if (layout === 'grid') {
         const cw = (W - pad * 2 - gap) / 2
-        H = pad * 2 + cw * 2 + gap + 70
+        H = pad * 2 + cw * 2 + gap + 56
         cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
       } else if (layout === 'asymmetric') {
         const colWidth = (W - pad * 2 - gap * 2) / 3
         const bigW = colWidth * 2 + gap
         const bigH = colWidth * 3 + gap * 2
-        H = pad * 2 + bigH + 70
+        H = pad * 2 + bigH + 56
         cellDefs = [
           { x: pad, y: pad, w: bigW, h: bigH },
           { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
@@ -177,7 +177,7 @@ export function EditView({
         ]
       } else {
         const cw = W - pad * 2
-        H = pad * 2 + cw + 100
+        H = pad * 2 + cw + 90
         cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
       }
 
@@ -207,7 +207,7 @@ export function EditView({
         const c = cellDefs[i]
         const dataUrls = shotFrames[i] ?? []
         ctx.save()
-        roundRect(ctx, c.x, c.y, c.w, c.h, 24)
+        roundRect(ctx, c.x, c.y, c.w, c.h, 16)
         ctx.clip()
 
         if (dataUrls.length === 0) {
@@ -237,10 +237,9 @@ export function EditView({
       }
 
       ctx.fillStyle = isDarkBg ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
-      ctx.font = '600 22px monospace'
+      ctx.font = '600 18px monospace'
       ctx.textAlign = 'center'
-      if ('letterSpacing' in ctx) { (ctx as any).letterSpacing = '0.3em' }
-      ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 32)
+      ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 28)
 
       const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
       if (!blob) return
