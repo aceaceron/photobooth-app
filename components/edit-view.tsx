@@ -56,6 +56,8 @@ export function EditView({
   const [exporting, setExporting] = useState(false)
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
   const filterCss = filterToCss(filters)
+  
+  const isDarkBg = background.id === 'ink'
 
   useEffect(() => {
     if (!isHost && syncedFilters) {
@@ -73,7 +75,7 @@ export function EditView({
   }, [frames, participants, shots])
 
   const cells = shotFrames.map((dataUrls, i) => (
-    <ShotMosaic key={i} dataUrls={dataUrls} filterCss={filterCss} />
+    <ShotMosaic key={i} dataUrls={dataUrls} filterCss={filterCss} isDarkBg={isDarkBg} />
   ))
 
   function update<K extends keyof FilterState>(key: K, value: FilterState[K]) {
@@ -181,11 +183,6 @@ export function EditView({
           h: cw,
         }))
       } else if (layout === 'asymmetric') {
-        // The big cell spans 2 columns x 3 rows (see Photostrip's
-        // col-span-2 row-span-3), so it's a tall rectangle, not a square.
-        // Its height must equal the 3 stacked small cells' combined
-        // height + gaps, or the canvas ends up too short and the bottom
-        // photo(s) get clipped off past the edge of the exported image.
         const colWidth = (W - pad * 2 - gap * 2) / 3
         const bigW = colWidth * 2 + gap
         const bigH = colWidth * 3 + gap * 2
@@ -258,7 +255,7 @@ export function EditView({
         ctx.restore()
       }
 
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
       ctx.font = '600 18px monospace'
       ctx.textAlign = 'center'
       ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
@@ -277,6 +274,7 @@ export function EditView({
             title: 'My Snapory Photostrip',
           })
           setSaved(true)
+          setTimeout(() => setSaved(false), 2000)
           return
         }
       }
@@ -296,7 +294,6 @@ export function EditView({
     } catch (err) {
       console.error('Failed to export photo strip:', err)
     } finally {
-      // FIX: Replaced malformed bracket execution structure with standard finally declaration block
       setExporting(false)
     }
   }
@@ -337,12 +334,13 @@ export function EditView({
               filterCss={filterCss}
               cells={cells}
               participantCount={participants.length}
+              isDarkBg={isDarkBg}
               className={cn('w-full max-w-[220px]', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
             />
           </div>
           {videoUrl && (
             <div className="w-full max-w-[320px] rounded-3xl overflow-hidden border border-border/60 shadow-lg bg-black">
-              <p className="text-xs text-center py-2 text-white/50 bg-zinc-900 font-semibold tracking-widest uppercase">Video Strip (.mp4)</p>
+              <p className="text-xs text-center py-2 text-white/50 bg-zinc-900 font-semibold tracking-widest uppercase">Video Strip</p>
               <video src={videoUrl} controls autoPlay loop className="w-full" />
             </div>
           )}
@@ -386,6 +384,18 @@ export function EditView({
                   <Slider label="Warmth" value={filters.warmth} min={-40} max={80} onChange={(v) => update('warmth', v)} />
                 </div>
               </section>
+
+              <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">
+                <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Filters</h2>
+                <div className="flex flex-wrap gap-2">
+                  <PresetToggle active={!filters.vintage && !filters.bw} onClick={() => update('vintage', false)} label="Original" />
+                  <PresetToggle active={filters.vintage} onClick={() => update('vintage', !filters.vintage)} label="Vintage" />
+                  <PresetToggle active={filters.bw} onClick={() => update('bw', !filters.bw)} label="B&W" />
+                  <button type="button" onClick={handleResetFilters} className="ml-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground">
+                    <RotateCcw className="size-3.5" /> Reset
+                  </button>
+                </div>
+              </section>
             </>
           )}
 
@@ -403,11 +413,11 @@ export function EditView({
                   </Button>
                 )}
                 <Button size="lg" className="h-12 w-full text-sm" onClick={saveToDevice} disabled={exporting}>
-                  {saved ? <><Check className="size-4" /> Saved Successfully</> : exporting ? 'Exporting\u2026' : <><Download className="size-4" /> Save Photo Strip (.png)</>}
+                  {saved ? <><Check className="size-4" /> Saved Successfully</> : exporting ? 'Exporting\u2026' : <><Download className="size-4" /> Save Photo Strip</>}
                 </Button>
                 {videoUrl && (
                   <Button variant="secondary" size="lg" className="h-12 w-full text-sm" onClick={downloadVideo}>
-                    <Download className="size-4" /> Save Video Strip (.mp4)
+                    <Download className="size-4" /> Save Video Strip
                   </Button>
                 )}
               </>
@@ -426,11 +436,13 @@ export function EditView({
 function ShotMosaic({
   dataUrls,
   filterCss,
+  isDarkBg
 }: {
   dataUrls: string[]
   filterCss: string
+  isDarkBg: boolean
 }) {
-  if (dataUrls.length === 0) return <div className="absolute inset-0 bg-gradient-to-br from-foreground/5 to-foreground/20" />
+  if (dataUrls.length === 0) return <div className={cn("absolute inset-0 bg-gradient-to-br", isDarkBg ? "from-white/5 to-white/20" : "from-black/5 to-black/20")} />
   
   const cols = dataUrls.length === 1 ? 1 : dataUrls.length === 3 ? 3 : 2
   return (
@@ -455,5 +467,13 @@ function Slider({
       </div>
       <input type="range" min={min} max={max} value={value} onChange={(e) => onChange(Number(e.target.value))} className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary" />
     </label>
+  )
+}
+
+function PresetToggle({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button type="button" onClick={onClick} className={cn('rounded-full border px-4 py-1.5 text-sm font-medium transition-colors', active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-muted')}>
+      {label}
+    </button>
   )
 }

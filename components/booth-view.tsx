@@ -1,36 +1,14 @@
 'use client'
 
-import {
-  AlertTriangle,
-  Camera,
-  LogOut,
-  Mic,
-  MicOff,
-  Timer,
-  Video,
-  X,
-} from 'lucide-react'
+import { AlertTriangle, Camera, LogOut, Mic, MicOff, Timer, Video, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Modal } from '@/components/modal'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { EditView } from '@/components/edit-view'
-import {
-  BACKGROUNDS,
-  LAYOUTS,
-  colorForId,
-  type CapturedFrame,
-  type LayoutId,
-  type BackgroundOption,
-  type Participant,
-  type FilterState,
-} from '@/lib/photobooth'
-import {
-  MAX_PEERS,
-  useRoomConnection,
-  type CountdownMessage,
-} from '@/lib/webrtc/use-room-connection'
-import { roundRect } from '@/lib/canvas-compose'
+import { BACKGROUNDS, LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
+import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
+import { roundRect, drawImageCover } from '@/lib/canvas-compose'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -46,20 +24,11 @@ type BoothViewProps = {
 const COUNTDOWN_MS = 3000
 const GAP_MS = 700
 const SHOT_INTERVAL_MS = COUNTDOWN_MS + GAP_MS
-const FINALIZE_GRACE_MS = 900
+const FINALIZE_GRACE_MS = 2000 // Extended freeze time to 2 seconds
 
 type LocalPlan = CountdownMessage & { startAtEpochMs: number }
 
-export function BoothView({
-  mode,
-  isHost,
-  roomCode,
-  layout,
-  background,
-  displayName,
-  onLeave,
-  onSyncTemplate,
-}: BoothViewProps) {
+export function BoothView({ mode, isHost, roomCode, layout, background, displayName, onLeave, onSyncTemplate }: BoothViewProps) {
   const shots = LAYOUTS.find((l) => l.id === layout)?.shots ?? 4
 
   const [permissionOpen, setPermissionOpen] = useState(true)
@@ -74,7 +43,6 @@ export function BoothView({
   const [flash, setFlash] = useState(false)
   const [capturing, setCapturing] = useState(false)
 
-  // Editing & Recording State
   const [shootResult, setShootResult] = useState<{frames: CapturedFrame[], participants: Participant[]} | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [chatMessages, setChatMessages] = useState<{sender: string, text: string, isAction?: boolean}[]>([])
@@ -90,14 +58,25 @@ export function BoothView({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
   const currentActiveShotIndexRef = useRef<number>(0)
+  
+  // Cache to store explicit frame images to build the sequential animated video strip natively
+  const imageCacheRef = useRef<Record<string, HTMLImageElement>>({})
+  const layoutMetricsRef = useRef({ W: 900, H: 1600, cellDefs: [] as any[] })
 
   const localColor = colorForId(displayName + roomCode)
+
+  const cacheImage = (key: string, url: string) => {
+    const img = new Image()
+    img.onload = () => { imageCacheRef.current[key] = img }
+    img.src = url
+  }
 
   const handleFrame = useCallback((senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
       framesRef.current = [
         ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
         { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
       ]
+      cacheImage(`${senderId}-${msg.shotIndex}`, msg.dataUrl)
   }, [])
 
   const handleCountdown = useCallback((msg: CountdownMessage) => {
@@ -106,16 +85,7 @@ export function BoothView({
     setCapturing(true)
     
     if (onSyncTemplate) {
-      // Only the background's id travels over the wire (see broadcastCountdown
-      // below). Rebuilding `{ id: msg.backgroundId }` on its own leaves name/
-      // className/swatch undefined, which later crashes the PNG/video export
-      // (`background.swatch.startsWith(...)`). Resolve the full option from
-      // the known list instead. If it's a custom background we can't
-      // reconstruct from an id alone, fall back to whatever background is
-      // already selected locally (or the first preset) instead of crashing.
-      const resolvedBackground =
-        BACKGROUNDS.find((b) => b.id === msg.backgroundId) ??
-        (msg.backgroundId === background.id ? background : BACKGROUNDS[0])
+      const resolvedBackground = BACKGROUNDS.find((b) => b.id === msg.backgroundId) ?? (msg.backgroundId === background.id ? background : BACKGROUNDS[0])
       onSyncTemplate(msg.layoutId, resolvedBackground)
     }
     
@@ -129,14 +99,7 @@ export function BoothView({
   const handleSyncFilters = useCallback((filters: any) => setSyncedFilters(filters), [])
   const handleFinalize = useCallback(() => setHostFinalized(true), [])
 
-  const {
-    peerId,
-    remotePeers,
-    broadcastCountdown,
-    sendFrameToAll,
-    broadcastData,
-    setMicEnabled,
-  } = useRoomConnection({
+  const { peerId, remotePeers, broadcastCountdown, sendFrameToAll, broadcastData, setMicEnabled } = useRoomConnection({
     roomCode,
     localMeta: { name: displayName, color: localColor },
     localStream,
@@ -150,9 +113,7 @@ export function BoothView({
 
   const participants: Participant[] = [
     { id: peerId, name: displayName, isYou: true, color: localColor },
-    ...Array.from(remotePeers.values())
-      .slice(0, MAX_PEERS - 1)
-      .map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
+    ...Array.from(remotePeers.values()).slice(0, MAX_PEERS - 1).map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
   ].sort((a, b) => a.id.localeCompare(b.id)) 
 
   async function requestAccess() {
@@ -166,10 +127,7 @@ export function BoothView({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' },
-        audio: true,
-      })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
       setLocalStream(stream)
       setGranted(true)
       setPermissionOpen(false)
@@ -181,9 +139,7 @@ export function BoothView({
   }
 
   useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream
-    }
+    if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream
   }, [localStream])
 
   useEffect(() => {
@@ -197,76 +153,57 @@ export function BoothView({
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
 
-  // Continuous loop combining real-time elements into the geometric specifications of the strip
+  // Sequentially mapping live video & frozen cached layouts
   const drawVideoLoop = useCallback(() => {
     if (mediaRecorderRef.current?.state !== 'recording') return
     const canvas = combinedCanvasRef.current
     const ctx = canvas?.getContext('2d')
     if (!ctx || !canvas) return
 
-    // Draw Background Layer matching the layout configuration parameters
+    const { W, H, cellDefs } = layoutMetricsRef.current
+    if (W === 0) return 
+
     if (background.id === 'sunset') {
-      const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height)
+      const g = ctx.createLinearGradient(0, 0, W, H)
       g.addColorStop(0, '#f7b267')
       g.addColorStop(1, '#f25f5c')
       ctx.fillStyle = g
     } else {
       ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
     }
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillRect(0, 0, W, H)
 
     const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
-    
-    let W = canvas.width
-    const pad = 40
-    const gap = 28
-    let cellDefs: { x: number; y: number; w: number; h: number }[] = []
-
-    if (layout === 'strip') {
-      const cw = W - pad * 2
-      let ratio = 0.75
-      if (participants.length === 2) ratio = 2 / 3
-      if (participants.length === 3) ratio = 9 / 21
-      if (participants.length >= 4) ratio = 9 / 16
-      const ch = cw * ratio
-      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
-    } else if (layout === 'grid') {
-      const cw = (W - pad * 2 - gap) / 2
-      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
-    } else if (layout === 'asymmetric') {
-      // Same fix as edit-view.tsx: the big cell spans 2 cols x 3 rows, so
-      // it must be a rectangle sized to match the 3 stacked small cells,
-      // not a square — otherwise it no longer matches the on-screen
-      // Photostrip layout and can run past the canvas bounds.
-      const colWidth = (W - pad * 2 - gap * 2) / 3
-      const bigW = colWidth * 2 + gap
-      const bigH = colWidth * 3 + gap * 2
-      cellDefs = [
-        { x: pad, y: pad, w: bigW, h: bigH },
-        { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
-        { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
-        { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
-      ]
-    } else {
-      const cw = W - pad * 2
-      cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
-    }
 
     cellDefs.forEach((c, i) => {
       ctx.save()
       roundRect(ctx, c.x, c.y, c.w, c.h, 16)
       ctx.clip()
 
-      // If the current countdown slot is running or complete, overlay feed animations
-      if (i <= currentActiveShotIndexRef.current && videos.length > 0) {
-        const len = videos.length
-        const cols = len === 1 ? 1 : len === 3 ? 3 : 2
-        const rows = Math.ceil(len / cols)
-        const gapPx = 2
-        
-        const subW_gross = (c.w - (cols - 1) * gapPx) / cols
-        const subH_gross = (c.h - (rows - 1) * gapPx) / rows
+      const len = participants.length
+      const cols = len === 1 ? 1 : len === 3 ? 3 : 2
+      const rows = Math.ceil(len / cols)
+      const gapPx = 2
+      const subW_gross = (c.w - (cols - 1) * gapPx) / cols
+      const subH_gross = (c.h - (rows - 1) * gapPx) / rows
 
+      // If the shot was already taken, draw the frozen cache frame for this participant
+      if (capturedShotsRef.current.has(i)) {
+        participants.forEach((p, idx) => {
+          const col = idx % cols
+          const row = Math.floor(idx / cols)
+          const dx = c.x + col * (subW_gross + gapPx)
+          const dy = c.y + row * (subH_gross + gapPx)
+          const img = imageCacheRef.current[`${p.id}-${i}`]
+          if (img) {
+            drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
+          } else {
+            ctx.fillStyle = '#e5e0d8'
+            ctx.fillRect(dx, dy, subW_gross, subH_gross)
+          }
+        })
+      // If the shot is currently actively ticking, map live active videos directly into stream
+      } else if (i === currentActiveShotIndexRef.current && videos.length > 0) {
         videos.forEach((video, idx) => {
           const col = idx % cols
           const row = Math.floor(idx / cols)
@@ -274,14 +211,12 @@ export function BoothView({
           const dy = c.y + row * (subH_gross + gapPx)
 
           ctx.save()
-          // Mirror context frame arrays
           ctx.translate(dx + subW_gross, dy)
           ctx.scale(-1, 1)
-          
+
           const srcRatio = video.videoWidth / video.videoHeight
           const dstRatio = subW_gross / subH_gross
           let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight
-
           if (srcRatio > dstRatio) {
             sw = video.videoHeight * dstRatio
             sx = (video.videoWidth - sw) / 2
@@ -289,16 +224,22 @@ export function BoothView({
             sh = video.videoWidth / dstRatio
             sy = (video.videoHeight - sh) / 2
           }
-
           ctx.drawImage(video, sx, sy, sw, sh, 0, 0, subW_gross, subH_gross)
           ctx.restore()
         })
+      // Future shots wait empty
       } else {
         ctx.fillStyle = '#e5e0d8'
         ctx.fillRect(c.x, c.y, c.w, c.h)
       }
       ctx.restore()
     })
+
+    // Dynamic contrast text based on the background
+    ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
+    ctx.font = '600 18px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
 
     requestAnimationFrame(drawVideoLoop)
   }, [layout, background, participants.length])
@@ -307,19 +248,50 @@ export function BoothView({
     const canvas = combinedCanvasRef.current
     if (!canvas) return
     
-    // Set dynamic canvas bounding parameters to emulate structure output
-    let canvasW = 900
-    let canvasH = 1600
-    if (layout === 'grid') canvasH = 1050
-    if (layout === 'polaroid') canvasH = 1050
+    // Identical dynamic W and H logic calculation to prevent layout cropping
+    let W = 900
+    const pad = 40
+    const gap = 28
+    let cellDefs: { x: number; y: number; w: number; h: number }[] = []
+    let H = 0
 
-    canvas.width = canvasW
-    canvas.height = canvasH
+    if (layout === 'strip') {
+      if (participants.length >= 3) W = 1200
+      const cw = W - pad * 2
+      let ratio = 0.75
+      if (participants.length === 2) ratio = 2 / 3
+      if (participants.length === 3) ratio = 9 / 21
+      if (participants.length >= 4) ratio = 9 / 16
+      const ch = cw * ratio
+      H = pad * 2 + ch * 4 + gap * 3 + 56
+      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
+    } else if (layout === 'grid') {
+      const cw = (W - pad * 2 - gap) / 2
+      H = pad * 2 + cw * 2 + gap + 56
+      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
+    } else if (layout === 'asymmetric') {
+      const colWidth = (W - pad * 2 - gap * 2) / 3
+      const bigW = colWidth * 2 + gap
+      const bigH = colWidth * 3 + gap * 2
+      H = pad * 2 + bigH + 56
+      cellDefs = [
+        { x: pad, y: pad, w: bigW, h: bigH },
+        { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
+        { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
+        { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
+      ]
+    } else {
+      const cw = W - pad * 2
+      H = pad * 2 + cw + 90
+      cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
+    }
+
+    layoutMetricsRef.current = { W, H, cellDefs }
+    canvas.width = W
+    canvas.height = H
 
     try {
       const stream = canvas.captureStream(30)
-      
-      // Force high compliance standard MP4 containers when matching engine rules allow
       const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264')
         ? { mimeType: 'video/mp4;codecs=h264' }
         : { mimeType: 'video/webm' }
@@ -353,7 +325,6 @@ export function BoothView({
   function captureLocalFrame(shotIndex: number) {
     const video = localVideoRef.current
     if (!video || video.readyState < 2) return
-    
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth || 640
     canvas.height = video.videoHeight || 480
@@ -370,6 +341,7 @@ export function BoothView({
       ...framesRef.current.filter((f) => !(f.participantId === peerId && f.shotIndex === shotIndex)),
       { participantId: peerId, shotIndex, dataUrl },
     ]
+    cacheImage(`${peerId}-${shotIndex}`, dataUrl)
     
     if (mode === 'room') sendFrameToAll(shotIndex, dataUrl)
   }
@@ -397,8 +369,9 @@ export function BoothView({
     const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS && capturedShotsRef.current.size >= plan.totalShots
       
     if (done && !finalizeTimerRef.current) {
-      stopVideoRecording()
+      // Freezes the grid for FINALIZE_GRACE_MS (2s) before finalizing the video recording
       finalizeTimerRef.current = setTimeout(() => {
+        stopVideoRecording()
         finalizeTimerRef.current = null
         setPlan(null)
         setCapturing(false)
