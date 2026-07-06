@@ -34,35 +34,30 @@ export function mosaicRects(
   }))
 }
 
-/** Draws an image or video into the target rect using object-fit: cover semantics. */
+/** Draws `img` into the target rect using object-fit: cover semantics. */
 export function drawImageCover(
   ctx: CanvasRenderingContext2D,
-  media: HTMLImageElement | HTMLVideoElement,
+  img: HTMLImageElement,
   x: number,
   y: number,
   w: number,
   h: number,
 ) {
-  // Determine intrinsic dimensions based on media type (Video vs Image)
-  const isVideo = 'videoWidth' in media
-  const srcW = isVideo ? (media as HTMLVideoElement).videoWidth : (media as HTMLImageElement).width
-  const srcH = isVideo ? (media as HTMLVideoElement).videoHeight : (media as HTMLImageElement).height
-
-  const srcRatio = srcW / srcH
+  const srcRatio = img.width / img.height
   const dstRatio = w / h
   let sx = 0
   let sy = 0
-  let sw = srcW
-  let sh = srcH
+  let sw = img.width
+  let sh = img.height
 
   if (srcRatio > dstRatio) {
-    sw = srcH * dstRatio
-    sx = (srcW - sw) / 2
+    sw = img.height * dstRatio
+    sx = (img.width - sw) / 2
   } else {
-    sh = srcW / dstRatio
-    sy = (srcH - sh) / 2
+    sh = img.width / dstRatio
+    sy = (img.height - sh) / 2
   }
-  ctx.drawImage(media, sx, sy, sw, sh, x, y, w, h)
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h)
 }
 
 export function roundRect(

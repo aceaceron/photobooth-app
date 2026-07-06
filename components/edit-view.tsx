@@ -89,6 +89,7 @@ export function EditView({
     if (isHost) onHostFilterUpdate(DEFAULT_FILTERS)
   }
 
+  // Pure canvas pixel manipulation engine to apply filter factors safely across all browsers
   function applyFiltersToCellCtx(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, f: FilterState) {
     const imgData = ctx.getImageData(x, y, w, h)
     const data = imgData.data
@@ -102,14 +103,17 @@ export function EditView({
       let g = data[i + 1]
       let b = data[i + 2]
 
+      // 1. Brightness Adjustment
       r *= bMult
       g *= bMult
       b *= bMult
 
+      // 2. Contrast Adjustment
       r = (r - 128) * cMult + 128
       g = (g - 128) * cMult + 128
       b = (b - 128) * cMult + 128
 
+      // 3. Saturation / Skin Tone & B&W Options
       const luma = 0.299 * r + 0.587 * g + 0.114 * b
       if (f.bw) {
         r = g = b = luma
@@ -119,6 +123,7 @@ export function EditView({
         b = luma + (b - luma) * sMult
       }
 
+      // 4. Vintage & Warmth Overlay Filter Simulation
       if (f.vintage) {
         r = r * 0.9 + luma * 0.1 + 30
         g = g * 0.9 + luma * 0.1 + 15
@@ -129,6 +134,7 @@ export function EditView({
         b -= f.warmth * 0.5
       }
 
+      // Clamp color ranges securely between 0 and 255
       data[i] = Math.min(255, Math.max(0, r))
       data[i + 1] = Math.min(255, Math.max(0, g))
       data[i + 2] = Math.min(255, Math.max(0, b))
@@ -153,17 +159,29 @@ export function EditView({
       if (layout === 'strip') {
         if (participants.length >= 3) W = 1200
         const cw = W - pad * 2
+        
         let ratio = 0.75
         if (participants.length === 2) ratio = 2 / 3
         if (participants.length === 3) ratio = 9 / 21
         if (participants.length >= 4) ratio = 9 / 16
+        
         const ch = cw * ratio
         H = pad * 2 + ch * 4 + gap * 3 + 56
-        cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
+        cellDefs = [0, 1, 2, 3].map((i) => ({
+          x: pad,
+          y: pad + i * (ch + gap),
+          w: cw,
+          h: ch,
+        }))
       } else if (layout === 'grid') {
         const cw = (W - pad * 2 - gap) / 2
         H = pad * 2 + cw * 2 + gap + 56
-        cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
+        cellDefs = [0, 1, 2, 3].map((i) => ({
+          x: pad + (i % 2) * (cw + gap),
+          y: pad + Math.floor(i / 2) * (cw + gap),
+          w: cw,
+          h: cw,
+        }))
       } else if (layout === 'asymmetric') {
         const colWidth = (W - pad * 2 - gap * 2) / 3
         const bigW = colWidth * 2 + gap
@@ -231,21 +249,23 @@ export function EditView({
             drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
           })
           
+          // Apply filters pixel by pixel safely over the clipped cell area
           applyFiltersToCellCtx(ctx, c.x, c.y, c.w, c.h, filters)
         }
         ctx.restore()
       }
 
-      ctx.fillStyle = isDarkBg ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
+      ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
       ctx.font = '600 18px monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 28)
+      ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
 
       const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
       if (!blob) return
 
       const fileName = `snapory-strip-${Date.now()}.png`
 
+      // Mobile Device Sharing Fallback Integration Container
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) && navigator.canShare && navigator.share) {
         const file = new File([blob], fileName, { type: 'image/png' })
         if (navigator.canShare({ files: [file] })) {
@@ -259,6 +279,7 @@ export function EditView({
         }
       }
 
+      // Fixed Standard Download Sequence for Desktop Browsers
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -320,7 +341,7 @@ export function EditView({
           {videoUrl && (
             <div className="w-full max-w-[320px] rounded-3xl overflow-hidden border border-border/60 shadow-lg bg-black">
               <p className="text-xs text-center py-2 text-white/50 bg-zinc-900 font-semibold tracking-widest uppercase">Video Strip</p>
-              <video src={videoUrl} controls autoPlay loop playsInline className="w-full" style={{ filter: filterCss }} />
+              <video src={videoUrl} controls autoPlay loop className="w-full" />
             </div>
           )}
         </div>

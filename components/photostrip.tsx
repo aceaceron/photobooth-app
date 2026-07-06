@@ -31,7 +31,7 @@ function Cell({
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-[16px]',
+        'relative overflow-hidden rounded-md',
         isDarkBg ? 'bg-white/10' : 'bg-black/10',
         className,
       )}
@@ -65,14 +65,14 @@ export function Photostrip({
   return (
     <div
       className={cn(
-        'flex flex-col gap-[28px] rounded-xl p-[40px] shadow-lg shadow-black/10',
+        'flex flex-col gap-2 rounded-xl p-2.5 shadow-lg shadow-foreground/10',
         backgroundClass,
         className,
       )}
       style={backgroundStyle}
     >
       {layout === 'strip' && (
-        <div className="flex flex-col gap-[28px]">
+        <div className="flex flex-col gap-2">
           {[0, 1, 2, 3].map((i) => (
             <Cell key={i} filterCss={filterCss} isDarkBg={isDarkBg} className="w-full" style={{ aspectRatio: stripRatio }}>
               {get(i)}
@@ -82,7 +82,7 @@ export function Photostrip({
       )}
 
       {layout === 'asymmetric' && (
-        <div className="grid grid-cols-3 grid-rows-3 gap-[28px]">
+        <div className="grid grid-cols-3 grid-rows-3 gap-2">
           <Cell filterCss={filterCss} isDarkBg={isDarkBg} className="col-span-2 row-span-3">
             {get(0)}
           </Cell>
@@ -99,7 +99,7 @@ export function Photostrip({
       )}
 
       {layout === 'grid' && (
-        <div className="grid grid-cols-2 gap-[28px]">
+        <div className="grid grid-cols-2 gap-2">
           {[0, 1, 2, 3].map((i) => (
             <Cell key={i} filterCss={filterCss} isDarkBg={isDarkBg} className="aspect-square">
               {get(i)}
@@ -109,17 +109,17 @@ export function Photostrip({
       )}
 
       {layout === 'polaroid' && (
-        <div className="flex flex-col gap-[28px]">
+        <div className="flex flex-col gap-2">
           <Cell filterCss={filterCss} isDarkBg={isDarkBg} className="aspect-square">
             {get(0)}
           </Cell>
-          <div className="h-[90px]" />
+          <div className="h-8" />
         </div>
       )}
 
       {showLogo && (
-        <p className={cn("text-center font-mono text-[18px] font-semibold tracking-widest uppercase", isDarkBg ? "text-white/55" : "text-black/55")}>
-          SNAPORY · {new Date().getFullYear()}
+        <p className={cn("pb-0.5 text-center font-mono text-[9px] font-medium tracking-widest uppercase", isDarkBg ? "text-white/55" : "text-black/55")}>
+          Snapory · {new Date().getFullYear()}
         </p>
       )}
     </div>
