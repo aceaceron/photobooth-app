@@ -87,6 +87,60 @@ export function EditView({
     if (isHost) onHostFilterUpdate(DEFAULT_FILTERS)
   }
 
+  // Pure canvas pixel manipulation engine to apply filter factors safely across all browsers
+  function applyFiltersToCellCtx(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, f: FilterState) {
+    const imgData = ctx.getImageData(x, y, w, h)
+    const data = imgData.data
+
+    const bMult = f.brightness / 100
+    const cMult = f.contrast / 100
+    const sMult = f.saturation / 100
+
+    for (let i = 0; i < data.length; i += 4) {
+      let r = data[i]
+      let g = data[i + 1]
+      let b = data[i + 2]
+
+      // 1. Brightness Adjustment
+      r *= bMult
+      g *= bMult
+      b *= bMult
+
+      // 2. Contrast Adjustment
+      r = (r - 128) * cMult + 128
+      g = (g - 128) * cMult + 128
+      b = (b - 128) * cMult + 128
+
+      // 3. Saturation / Skin Tone & B&W Options
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b
+      if (f.bw) {
+        r = g = b = luma
+      } else {
+        r = luma + (r - luma) * sMult
+        g = luma + (g - luma) * sMult
+        b = luma + (b - luma) * sMult
+      }
+
+      // 4. Vintage & Warmth Overlay Filter Simulation
+      if (f.vintage) {
+        r = r * 0.9 + luma * 0.1 + 30
+        g = g * 0.9 + luma * 0.1 + 15
+        b = b * 0.9 + luma * 0.1
+      }
+      if (f.warmth !== 0) {
+        r += f.warmth * 0.5
+        b -= f.warmth * 0.5
+      }
+
+      // Clamp color ranges securely between 0 and 255
+      data[i] = Math.min(255, Math.max(0, r))
+      data[i + 1] = Math.min(255, Math.max(0, g))
+      data[i + 2] = Math.min(255, Math.max(0, b))
+    }
+
+    ctx.putImageData(imgData, x, y)
+  }
+
   async function saveToDevice() {
     setExporting(true)
     try {
@@ -162,7 +216,7 @@ export function EditView({
       } else {
         ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
       }
-      if (!(background.id === 'custom')) ctx.fillRect(0, 0, W, H)
+      if (background.id !== 'custom') ctx.fillRect(0, 0, W, H)
 
       for (let i = 0; i < cellDefs.length; i++) {
         const c = cellDefs[i]
@@ -170,7 +224,6 @@ export function EditView({
         ctx.save()
         roundRect(ctx, c.x, c.y, c.w, c.h, 16)
         ctx.clip()
-        ctx.filter = filterCss
 
         if (dataUrls.length === 0) {
           ctx.fillStyle = '#e5e0d8'
@@ -192,8 +245,10 @@ export function EditView({
             const dy = c.y + row * (subH_gross + gapPx)
             drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
           })
+          
+          // Apply filters pixel by pixel safely over the clipped cell area
+          applyFiltersToCellCtx(ctx, c.x, c.y, c.w, c.h, filters)
         }
-        ctx.filter = 'none'
         ctx.restore()
       }
 
@@ -207,22 +262,20 @@ export function EditView({
 
       const fileName = `snapory-strip-${Date.now()}.png`
 
-      // Mobile Device Web Share API Integration
+      // Mobile Device Sharing Fallback Integration Container
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) && navigator.canShare && navigator.share) {
         const file = new File([blob], fileName, { type: 'image/png' })
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
             files: [file],
             title: 'My Snapory Photostrip',
-            text: 'Check out our photostrip!'
           })
           setSaved(true)
-          setTimeout(() => setSaved(false), 2000)
           return
         }
       }
 
-      // Desktop Download Fallback Method
+      // Fixed Standard Download Sequence for Desktop Browsers
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -236,7 +289,8 @@ export function EditView({
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
       console.error('Failed to export photo strip:', err)
-    } {
+    } finally {
+      // FIX: Replaced malformed bracket execution structure with standard finally declaration block
       setExporting(false)
     }
   }
