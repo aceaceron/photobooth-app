@@ -1,35 +1,13 @@
 'use client'
 
-import {
-  AlertTriangle,
-  Camera,
-  LogOut,
-  Mic,
-  MicOff,
-  ShieldCheck,
-  Timer,
-  Video,
-  X,
-} from 'lucide-react'
+import { AlertTriangle, Camera, LogOut, Mic, MicOff, Timer, Video, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Modal } from '@/components/modal'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { EditView } from '@/components/edit-view'
-import {
-  LAYOUTS,
-  colorForId,
-  type CapturedFrame,
-  type LayoutId,
-  type BackgroundOption,
-  type Participant,
-  type FilterState,
-} from '@/lib/photobooth'
-import {
-  MAX_PEERS,
-  useRoomConnection,
-  type CountdownMessage,
-} from '@/lib/webrtc/use-room-connection'
+import { LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
+import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -37,7 +15,7 @@ type BoothViewProps = {
   layout: LayoutId
   background: BackgroundOption
   displayName: string
-  isHost: boolean 
+  isHost: boolean
   onLeave: () => void
   onSyncTemplate: (layoutId: string, background: BackgroundOption) => void
 }
@@ -73,10 +51,9 @@ export function BoothView({
   const [flash, setFlash] = useState(false)
   const [capturing, setCapturing] = useState(false)
 
-  // Editing & Recording State
-  const [shootResult, setShootResult] = useState<{frames: CapturedFrame[], participants: Participant[]} | null>(null)
+  const [shootResult, setShootResult] = useState<{ frames: CapturedFrame[]; participants: Participant[] } | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
-  const [chatMessages, setChatMessages] = useState<{sender: string, text: string, isAction?: boolean}[]>([])
+  const [chatMessages, setChatMessages] = useState<{ sender: string; text: string; isAction?: boolean }[]>([])
   const [syncedFilters, setSyncedFilters] = useState<FilterState | null>(null)
   const [hostFinalized, setHostFinalized] = useState(false)
 
@@ -88,42 +65,29 @@ export function BoothView({
   const combinedCanvasRef = useRef<HTMLCanvasElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
+  const currentActiveShotIndexRef = useRef<number>(0)
 
   const localColor = colorForId(displayName + roomCode)
 
   const handleFrame = useCallback((senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
-      framesRef.current = [
-        ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
-        { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
-      ]
+    framesRef.current = [
+      ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
+      { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
+    ]
   }, [])
 
-const handleCountdown = useCallback((msg: CountdownMessage) => {
-  capturedShotsRef.current = new Set()
-  framesRef.current = [] 
-  setCapturing(true)
-  
-  // FIX: Changed 'onSync' to 'onSyncTemplate'
-  if (onSyncTemplate) onSyncTemplate(msg.layoutId, { id: msg.backgroundId } as BackgroundOption)
-  
-  setPlan({
-    ...msg,
-    startAtEpochMs: Date.now() + msg.delayMs
-  })
-}, [onSyncTemplate]) // FIX: Dependency updated
+  const handleCountdown = useCallback((msg: CountdownMessage) => {
+    capturedShotsRef.current = new Set()
+    framesRef.current = []
+    setCapturing(true)
+    setPlan({ ...msg, startAtEpochMs: Date.now() + msg.delayMs })
+  }, [])
 
-  const handleChat = useCallback((msg: any) => setChatMessages(prev => [...prev, msg]), [])
+  const handleChat = useCallback((msg: any) => setChatMessages((prev) => [...prev, msg]), [])
   const handleSyncFilters = useCallback((filters: any) => setSyncedFilters(filters), [])
   const handleFinalize = useCallback(() => setHostFinalized(true), [])
 
-  const {
-    peerId,
-    remotePeers,
-    broadcastCountdown,
-    sendFrameToAll,
-    broadcastData,
-    setMicEnabled,
-  } = useRoomConnection({
+  const { peerId, remotePeers, broadcastCountdown, sendFrameToAll, broadcastData, setMicEnabled } = useRoomConnection({
     roomCode,
     localMeta: { name: displayName, color: localColor },
     localStream,
@@ -132,135 +96,127 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
     onCountdown: handleCountdown,
     onChat: handleChat,
     onSyncFilters: handleSyncFilters,
-    onFinalize: handleFinalize
+    onFinalize: handleFinalize,
   })
 
   const participants: Participant[] = [
     { id: peerId, name: displayName, isYou: true, color: localColor },
-    ...Array.from(remotePeers.values())
-      .slice(0, MAX_PEERS - 1)
-      .map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
-  ].sort((a, b) => a.id.localeCompare(b.id)) 
+    ...Array.from(remotePeers.values()).map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
+  ].sort((a, b) => a.id.localeCompare(b.id))
 
   async function requestAccess() {
     setRequesting(true)
-    setMediaError(null)
-
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      setMediaError('Camera access requires a secure connection. Over a local network this means HTTPS.')
+      setMediaError('Camera access requires an HTTPS secure connection.')
       setRequesting(false)
       return
     }
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' },
-        audio: true,
-      })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
       setLocalStream(stream)
       setGranted(true)
       setPermissionOpen(false)
-    } catch (err) {
-      setMediaError('Could not access your camera. Please check permissions and try again.')
+    } catch {
+      setMediaError('Could not access camera resources.')
     } finally {
       setRequesting(false)
     }
   }
 
   useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream
-    }
+    if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream
   }, [localStream])
-
-  useEffect(() => {
-    return () => {
-      localStream?.getTracks().forEach((t) => t.stop())
-      if (finalizeTimerRef.current) clearTimeout(finalizeTimerRef.current)
-    }
-  }, [localStream])
-
-  useEffect(() => {
-    setMicEnabled(micOn)
-  }, [micOn, setMicEnabled])
 
   const drawVideoLoop = useCallback(() => {
     if (mediaRecorderRef.current?.state !== 'recording') return
     const canvas = combinedCanvasRef.current
     const ctx = canvas?.getContext('2d')
-    if (ctx && canvas) {
-        const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
-        if (videos.length > 0) {
-            ctx.fillStyle = '#000'
-            ctx.fillRect(0, 0, canvas.width, canvas.height)
-            const count = videos.length
-            const cols = Math.ceil(Math.sqrt(count))
-            const rows = Math.ceil(count / cols)
-            const cellW = canvas.width / cols
-            const cellH = canvas.height / rows
-            videos.forEach((video, index) => {
-                const col = index % cols
-                const row = Math.floor(index / cols)
-                const cx = col * cellW
-                const cy = row * cellH
-                ctx.save()
-                ctx.translate(cx + cellW, cy)
-                ctx.scale(-1, 1)
-                ctx.drawImage(video, 0, 0, cellW, cellH)
-                ctx.restore()
-            })
-        }
+    if (!ctx || !canvas) return
+
+    // Draw background configuration layout values matching photostrip properties
+    ctx.fillStyle = background.id === 'sunset' ? '#f25f5c' : background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    const videos = Array.from(document.querySelectorAll('video')).filter((v) => v.readyState >= 2)
+    let cellDefs: { x: number; y: number; w: number; h: number }[] = []
+    const W = canvas.width
+    const pad = 30
+    const gap = 15
+
+    if (layout === 'strip') {
+      const cw = W - pad * 2
+      const ch = cw * 0.65 
+      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
+    } else {
+      const cw = (W - pad * 2 - gap) / 2
+      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
     }
+
+    // Dynamic stream compositor mapping loops
+    cellDefs.forEach((cell, idx) => {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(cell.x, cell.y, cell.w, cell.h)
+      ctx.clip()
+
+      // Active video mapping or placeholder fallback rendering
+      if (idx <= currentActiveShotIndexRef.current && videos.length > 0) {
+        const targetVideo = videos[0] as HTMLVideoElement // Local user context prioritize frame updates
+        ctx.translate(cell.x + cell.w, cell.y)
+        ctx.scale(-1, 1)
+        ctx.drawImage(targetVideo, 0, 0, cell.w, cell.h)
+      } else {
+        ctx.fillStyle = '#1e1e24'
+        ctx.fillRect(cell.x, cell.y, cell.w, cell.h)
+      }
+      ctx.restore()
+    })
+
     requestAnimationFrame(drawVideoLoop)
-  }, [])
+  }, [layout, background])
 
   function startVideoRecording() {
     const canvas = combinedCanvasRef.current
     if (!canvas) return
     try {
       const stream = canvas.captureStream(30)
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      // Check device codec support containers for container mapping
+      const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') 
+        ? { mimeType: 'video/mp4;codecs=h264' } 
+        : { mimeType: 'video/webm' }
+        
+      const recorder = new MediaRecorder(stream, options)
       recordedChunksRef.current = []
       recorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data) }
       recorder.onstop = () => {
-          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
-          setVideoUrl(URL.createObjectURL(blob))
+        const blob = new Blob(recordedChunksRef.current, { type: options.mimeType })
+        setVideoUrl(URL.createObjectURL(blob))
       }
       recorder.start()
       mediaRecorderRef.current = recorder
       requestAnimationFrame(drawVideoLoop)
     } catch (err) {
-      console.error("Video recording failed", err)
-    }
-  }
-
-  function stopVideoRecording() {
-    if (mediaRecorderRef.current?.state === 'recording') {
-        mediaRecorderRef.current.stop()
+      console.error('Video canvas configuration failed:', err)
     }
   }
 
   function captureLocalFrame(shotIndex: number) {
     const video = localVideoRef.current
     if (!video || video.readyState < 2) return
-    
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth || 640
     canvas.height = video.videoHeight || 480
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    
     ctx.translate(canvas.width, 0)
     ctx.scale(-1, 1)
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
     framesRef.current = [
       ...framesRef.current.filter((f) => !(f.participantId === peerId && f.shotIndex === shotIndex)),
       { participantId: peerId, shotIndex, dataUrl },
     ]
-    
     if (mode === 'room') sendFrameToAll(shotIndex, dataUrl)
   }
 
@@ -275,6 +231,7 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
     const elapsed = Date.now() - plan.startAtEpochMs
     const rawIndex = Math.floor(elapsed / plan.intervalMs)
     const shotIndex = Math.min(Math.max(rawIndex, 0), plan.totalShots - 1)
+    currentActiveShotIndexRef.current = shotIndex
 
     if (elapsed >= shotIndex * plan.intervalMs + COUNTDOWN_MS && !capturedShotsRef.current.has(shotIndex) && elapsed >= 0) {
       capturedShotsRef.current.add(shotIndex)
@@ -284,9 +241,8 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
     }
 
     const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS && capturedShotsRef.current.size >= plan.totalShots
-      
     if (done && !finalizeTimerRef.current) {
-      stopVideoRecording()
+      if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
       finalizeTimerRef.current = setTimeout(() => {
         finalizeTimerRef.current = null
         setPlan(null)
@@ -298,21 +254,19 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
 
   function startCapture() {
     if (capturing || !granted || (!isHost && mode === 'room')) return
-    
     const newPlan: CountdownMessage = {
       instigatorId: peerId,
       totalShots: shots,
-      delayMs: 1500, 
+      delayMs: 1500,
       intervalMs: SHOT_INTERVAL_MS,
       layoutId: layout,
-      backgroundId: background.id
+      backgroundId: background.id,
     }
-    
+    currentActiveShotIndexRef.current = 0
     startVideoRecording()
-
     if (mode === 'room') {
       broadcastCountdown(newPlan)
-      handleCountdown(newPlan) 
+      handleCountdown(newPlan)
     } else {
       handleCountdown(newPlan)
     }
@@ -321,7 +275,7 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
   const displayCount = (() => {
     if (!plan) return null
     const elapsed = Date.now() - plan.startAtEpochMs
-    if (elapsed < 0) return 3 
+    if (elapsed < 0) return 3
     const shotIndex = Math.min(Math.max(Math.floor(elapsed / plan.intervalMs), 0), plan.totalShots - 1)
     const timeIntoShot = elapsed - shotIndex * plan.intervalMs
     if (timeIntoShot >= COUNTDOWN_MS) return null
@@ -342,7 +296,7 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
         chatMessages={chatMessages}
         onSendMessage={(text, isAction) => {
           const msg = { sender: displayName, text, isAction }
-          handleChat(msg)
+          setChatMessages((prev) => [...prev, msg])
           broadcastData({ type: 'chat', ...msg })
         }}
         syncedFilters={syncedFilters}
@@ -353,10 +307,10 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
           broadcastData({ type: 'finalize' })
         }}
         onRetake={() => {
-           setShootResult(null)
-           setVideoUrl(null)
-           setHostFinalized(false)
-           setChatMessages([])
+          setShootResult(null)
+          setVideoUrl(null)
+          setHostFinalized(false)
+          setChatMessages([])
         }}
         onDone={onLeave}
       />
@@ -373,12 +327,9 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
             <span className="size-2 animate-pulse rounded-full bg-primary" />
             {mode === 'room' ? `Room /r/${roomCode}` : 'Solo shoot'}
           </span>
-          <span className="hidden text-sm text-muted-foreground sm:inline">
-            {participants.length} {participants.length === 1 ? 'person' : 'people'} · {shots} shots
-          </span>
         </div>
         <Button variant="destructive" size="sm" onClick={onLeave}>
-          <LogOut className="size-4" /> Leave room
+          Leave room
         </Button>
       </div>
 
@@ -390,16 +341,6 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
             ) : !p.isYou ? (
               <RemoteVideoTile stream={remotePeers.get(p.id)?.stream ?? null} />
             ) : null}
-
-            {(!p.isYou || !granted) && !remotePeers.get(p.id)?.stream && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground bg-zinc-900/50">
-                <span className="flex items-center gap-1 text-xs">
-                  <Camera className="size-3.5" />
-                  {p.isYou ? 'camera off' : 'connecting…'}
-                </span>
-              </div>
-            )}
-
             {plan && currentShotIndex >= 0 && displayCount !== null && (
               <div className="absolute inset-0 flex items-center justify-center bg-foreground/30 backdrop-blur-[2px]">
                 <span className="text-6xl font-bold text-background drop-shadow-lg">{displayCount}</span>
@@ -409,37 +350,24 @@ const handleCountdown = useCallback((msg: CountdownMessage) => {
         ))}
       </div>
 
-      <canvas ref={combinedCanvasRef} width={1280} height={720} className="hidden" />
+      {/* Synchronized hidden layout recorder rendering destination layout sizes */}
+      <canvas ref={combinedCanvasRef} width={450} height={800} className="hidden" />
 
       <div className="mt-6 flex flex-col items-center justify-center gap-4">
         <div className="flex items-center justify-center gap-6">
           <button type="button" onClick={() => setMicOn((m) => !m)} className={cn('flex size-12 items-center justify-center rounded-full border transition-colors', micOn ? 'border-border bg-card hover:bg-muted' : 'border-destructive/40 bg-destructive/10 text-destructive')}>
             {micOn ? <Mic className="size-5" /> : <MicOff className="size-5" />}
           </button>
-          <button type="button" onClick={startCapture} disabled={capturing || !granted || (!isHost && mode === 'room')} className="group relative flex size-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100">
+          <button type="button" onClick={startCapture} disabled={capturing || !granted || (!isHost && mode === 'room')} className="group relative flex size-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 transition-transform hover:scale-105 active:scale-95 disabled:opacity-50">
             <span className="absolute inset-1.5 rounded-full border-4 border-primary-foreground/80" />
             <Camera className="size-7" />
           </button>
           <div className="flex w-24 items-center gap-1 rounded-full border border-border bg-card px-3 py-2 text-sm">
-            <Timer className="size-4 text-primary" />
             <span className="font-medium">3s</span>
           </div>
         </div>
-        <p className="text-center text-sm font-medium text-muted-foreground">
-          {!granted ? 'Allow camera access to start shooting.' : capturing ? `Taking shot ${currentShotIndex + 1} of ${shots}…` : !isHost && mode === 'room' ? 'Waiting for Host to start the photoshoot...' : `Tap the shutter to capture ${shots} ${shots === 1 ? 'photo' : 'photos'}.`}
-        </p>
       </div>
-
       {flash && <div className="pointer-events-none fixed inset-0 z-50 bg-background animate-out fade-out duration-300" />}
-
-      <Modal open={permissionOpen} onClose={() => setPermissionOpen(false)}>
-        <div className="flex flex-col items-center text-center">
-          <h2 className="text-xl font-semibold tracking-tight">Allow camera access</h2>
-          <Button size="lg" className="mt-4" onClick={requestAccess} disabled={requesting}>
-            {requesting ? 'Requesting…' : 'Allow access'}
-          </Button>
-        </div>
-      </Modal>
     </div>
   )
 }
