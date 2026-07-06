@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { EditView } from '@/components/edit-view'
 import {
+  BACKGROUNDS,
   LAYOUTS,
   colorForId,
   type CapturedFrame,
@@ -104,13 +105,25 @@ export function BoothView({
     framesRef.current = [] 
     setCapturing(true)
     
-    if (onSyncTemplate) onSyncTemplate(msg.layoutId, { id: msg.backgroundId } as BackgroundOption)
+    if (onSyncTemplate) {
+      // Only the background's id travels over the wire (see broadcastCountdown
+      // below). Rebuilding `{ id: msg.backgroundId }` on its own leaves name/
+      // className/swatch undefined, which later crashes the PNG/video export
+      // (`background.swatch.startsWith(...)`). Resolve the full option from
+      // the known list instead. If it's a custom background we can't
+      // reconstruct from an id alone, fall back to whatever background is
+      // already selected locally (or the first preset) instead of crashing.
+      const resolvedBackground =
+        BACKGROUNDS.find((b) => b.id === msg.backgroundId) ??
+        (msg.backgroundId === background.id ? background : BACKGROUNDS[0])
+      onSyncTemplate(msg.layoutId, resolvedBackground)
+    }
     
     setPlan({
       ...msg,
       startAtEpochMs: Date.now() + msg.delayMs
     })
-  }, [onSyncTemplate])
+  }, [onSyncTemplate, background])
 
   const handleChat = useCallback((msg: any) => setChatMessages(prev => [...prev, msg]), [])
   const handleSyncFilters = useCallback((filters: any) => setSyncedFilters(filters), [])
