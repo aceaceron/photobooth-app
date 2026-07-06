@@ -57,6 +57,7 @@ export function Photostrip({
 }: PhotostripProps) {
   const get = (i: number) => cells[i]
 
+  // Dynamically widen the strip cell to prevent aggressive side-cropping when multiple peers join
   let stripRatio = 4 / 3
   if (participantCount === 2) stripRatio = 3 / 2
   if (participantCount === 3) stripRatio = 21 / 9

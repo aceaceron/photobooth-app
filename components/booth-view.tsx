@@ -24,7 +24,6 @@ type BoothViewProps = {
 const COUNTDOWN_MS = 3000
 const GAP_MS = 700
 const SHOT_INTERVAL_MS = COUNTDOWN_MS + GAP_MS
-const FINALIZE_GRACE_MS = 2000 // Extended freeze time to 2 seconds
 
 type LocalPlan = CountdownMessage & { startAtEpochMs: number }
 
@@ -54,29 +53,24 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   const capturedShotsRef = useRef<Set<number>>(new Set())
   const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const combinedCanvasRef = useRef<HTMLCanvasElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const recordedChunksRef = useRef<Blob[]>([])
-  const currentActiveShotIndexRef = useRef<number>(0)
+  // WebRTC & Compositor specific refs
+  const rawCanvasRef = useRef<HTMLCanvasElement>(null)
+  const stripCanvasRef = useRef<HTMLCanvasElement>(null)
+  const rawRecorderRef = useRef<MediaRecorder | null>(null)
+  const rawChunksRef = useRef<Blob[]>([])
   
-  // Cache to store explicit frame images to build the sequential animated video strip natively
-  const imageCacheRef = useRef<Record<string, HTMLImageElement>>({})
-  const layoutMetricsRef = useRef({ W: 900, H: 1600, cellDefs: [] as any[] })
-
+  const liveRecorderStartedRef = useRef(false)
+  const shotIntervalRef = useRef(SHOT_INTERVAL_MS)
+  const layoutRef = useRef(layout)
+  const backgroundRef = useRef(background)
+  
   const localColor = colorForId(displayName + roomCode)
-
-  const cacheImage = (key: string, url: string) => {
-    const img = new Image()
-    img.onload = () => { imageCacheRef.current[key] = img }
-    img.src = url
-  }
 
   const handleFrame = useCallback((senderId: string, msg: { shotIndex: number; dataUrl: string }) => {
       framesRef.current = [
         ...framesRef.current.filter((f) => !(f.participantId === senderId && f.shotIndex === msg.shotIndex)),
         { participantId: senderId, shotIndex: msg.shotIndex, dataUrl: msg.dataUrl },
       ]
-      cacheImage(`${senderId}-${msg.shotIndex}`, msg.dataUrl)
   }, [])
 
   const handleCountdown = useCallback((msg: CountdownMessage) => {
@@ -116,16 +110,21 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     ...Array.from(remotePeers.values()).slice(0, MAX_PEERS - 1).map((p) => ({ id: p.peerId, name: p.meta.name, color: p.meta.color })),
   ].sort((a, b) => a.id.localeCompare(b.id)) 
 
+  const participantsRef = useRef(participants)
+  
+  useEffect(() => {
+    layoutRef.current = layout
+    backgroundRef.current = background
+    participantsRef.current = participants
+  }, [layout, background, participants])
+
   async function requestAccess() {
     setRequesting(true)
-    setMediaError(null)
-
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setMediaError('Camera access requires a secure connection. Over a local network this means HTTPS.')
       setRequesting(false)
       return
     }
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
       setLocalStream(stream)
@@ -149,177 +148,196 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     }
   }, [localStream])
 
-  useEffect(() => {
-    setMicEnabled(micOn)
-  }, [micOn, setMicEnabled])
+  useEffect(() => { setMicEnabled(micOn) }, [micOn, setMicEnabled])
 
-  // Sequentially mapping live video & frozen cached layouts
-  const drawVideoLoop = useCallback(() => {
-    if (mediaRecorderRef.current?.state !== 'recording') return
-    const canvas = combinedCanvasRef.current
+  // Draws the live webcam composite feed continuously to be recorded into a raw blob buffer
+  const drawLiveLoop = useCallback(() => {
+    if (rawRecorderRef.current?.state !== 'recording') return
+    const canvas = rawCanvasRef.current
     const ctx = canvas?.getContext('2d')
     if (!ctx || !canvas) return
 
-    const { W, H, cellDefs } = layoutMetricsRef.current
-    if (W === 0) return 
+    const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2 && v.id !== 'simultaneous-playback-vids')
 
-    if (background.id === 'sunset') {
-      const g = ctx.createLinearGradient(0, 0, W, H)
-      g.addColorStop(0, '#f7b267')
-      g.addColorStop(1, '#f25f5c')
-      ctx.fillStyle = g
-    } else {
-      ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
-    }
-    ctx.fillRect(0, 0, W, H)
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
 
-    const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
+    const len = participantsRef.current.length
+    const cols = len === 1 ? 1 : len === 3 ? 3 : 2
+    const rows = Math.ceil(len / cols)
+    const subW = canvas.width / cols
+    const subH = canvas.height / rows
 
-    cellDefs.forEach((c, i) => {
+    videos.forEach((video, idx) => {
+      const col = idx % cols
+      const row = Math.floor(idx / cols)
+      const dx = col * subW
+      const dy = row * subH
+
       ctx.save()
-      roundRect(ctx, c.x, c.y, c.w, c.h, 16)
-      ctx.clip()
-
-      const len = participants.length
-      const cols = len === 1 ? 1 : len === 3 ? 3 : 2
-      const rows = Math.ceil(len / cols)
-      const gapPx = 2
-      const subW_gross = (c.w - (cols - 1) * gapPx) / cols
-      const subH_gross = (c.h - (rows - 1) * gapPx) / rows
-
-      // If the shot was already taken, draw the frozen cache frame for this participant
-      if (capturedShotsRef.current.has(i)) {
-        participants.forEach((p, idx) => {
-          const col = idx % cols
-          const row = Math.floor(idx / cols)
-          const dx = c.x + col * (subW_gross + gapPx)
-          const dy = c.y + row * (subH_gross + gapPx)
-          const img = imageCacheRef.current[`${p.id}-${i}`]
-          if (img) {
-            drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
-          } else {
-            ctx.fillStyle = '#e5e0d8'
-            ctx.fillRect(dx, dy, subW_gross, subH_gross)
-          }
-        })
-      // If the shot is currently actively ticking, map live active videos directly into stream
-      } else if (i === currentActiveShotIndexRef.current && videos.length > 0) {
-        videos.forEach((video, idx) => {
-          const col = idx % cols
-          const row = Math.floor(idx / cols)
-          const dx = c.x + col * (subW_gross + gapPx)
-          const dy = c.y + row * (subH_gross + gapPx)
-
-          ctx.save()
-          ctx.translate(dx + subW_gross, dy)
-          ctx.scale(-1, 1)
-
-          const srcRatio = video.videoWidth / video.videoHeight
-          const dstRatio = subW_gross / subH_gross
-          let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight
-          if (srcRatio > dstRatio) {
-            sw = video.videoHeight * dstRatio
-            sx = (video.videoWidth - sw) / 2
-          } else {
-            sh = video.videoWidth / dstRatio
-            sy = (video.videoHeight - sh) / 2
-          }
-          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, subW_gross, subH_gross)
-          ctx.restore()
-        })
-      // Future shots wait empty
-      } else {
-        ctx.fillStyle = '#e5e0d8'
-        ctx.fillRect(c.x, c.y, c.w, c.h)
-      }
+      ctx.translate(dx + subW, dy)
+      ctx.scale(-1, 1)
+      drawImageCover(ctx, video, 0, 0, subW, subH)
       ctx.restore()
     })
 
-    // Dynamic contrast text based on the background
-    ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
-    ctx.font = '600 18px monospace'
-    ctx.textAlign = 'center'
-    ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
+    requestAnimationFrame(drawLiveLoop)
+  }, [])
 
-    requestAnimationFrame(drawVideoLoop)
-  }, [layout, background, participants.length])
-
-  function startVideoRecording() {
-    const canvas = combinedCanvasRef.current
+  function startRawRecording() {
+    const canvas = rawCanvasRef.current
     if (!canvas) return
-    
-    // Identical dynamic W and H logic calculation to prevent layout cropping
-    let W = 900
-    const pad = 40
-    const gap = 28
-    let cellDefs: { x: number; y: number; w: number; h: number }[] = []
-    let H = 0
+    canvas.width = 1280
+    canvas.height = 720
 
-    if (layout === 'strip') {
-      if (participants.length >= 3) W = 1200
-      const cw = W - pad * 2
-      let ratio = 0.75
-      if (participants.length === 2) ratio = 2 / 3
-      if (participants.length === 3) ratio = 9 / 21
-      if (participants.length >= 4) ratio = 9 / 16
-      const ch = cw * ratio
-      H = pad * 2 + ch * 4 + gap * 3 + 56
-      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
-    } else if (layout === 'grid') {
-      const cw = (W - pad * 2 - gap) / 2
-      H = pad * 2 + cw * 2 + gap + 56
-      cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
-    } else if (layout === 'asymmetric') {
-      const colWidth = (W - pad * 2 - gap * 2) / 3
-      const bigW = colWidth * 2 + gap
-      const bigH = colWidth * 3 + gap * 2
-      H = pad * 2 + bigH + 56
-      cellDefs = [
-        { x: pad, y: pad, w: bigW, h: bigH },
-        { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
-        { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
-        { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
-      ]
-    } else {
-      const cw = W - pad * 2
-      H = pad * 2 + cw + 90
-      cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
+    const stream = canvas.captureStream(30)
+    const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? { mimeType: 'video/mp4;codecs=h264' } : { mimeType: 'video/webm' }
+    const recorder = new MediaRecorder(stream, options)
+    rawChunksRef.current = []
+    
+    recorder.ondataavailable = e => { if (e.data.size > 0) rawChunksRef.current.push(e.data) }
+    recorder.onstop = async () => {
+      const blob = new Blob(rawChunksRef.current, { type: options.mimeType })
+      processVideoStrip(blob)
+    }
+    
+    recorder.start()
+    rawRecorderRef.current = recorder
+    drawLiveLoop()
+  }
+
+  // The core compiler: takes the raw timeline and outputs the simultaneous looping grid.
+  async function processVideoStrip(rawBlob: Blob) {
+    const url = URL.createObjectURL(rawBlob)
+    const vids: HTMLVideoElement[] = []
+
+    for (let i = 0; i < shots; i++) {
+       const v = document.createElement('video')
+       v.src = url
+       v.muted = true
+       v.playsInline = true
+       v.crossOrigin = 'anonymous'
+       v.id = 'simultaneous-playback-vids'
+       v.load()
+       await new Promise<void>(res => {
+          v.onloadeddata = () => {
+             v.currentTime = (i * shotIntervalRef.current) / 1000
+             res()
+          }
+       })
+       vids.push(v)
     }
 
-    layoutMetricsRef.current = { W, H, cellDefs }
+    const canvas = stripCanvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+
+    let W = 900
+    const pad = 48
+    const gap = 32
+    let cellDefs: { x: number; y: number; w: number; h: number }[] = []
+    let H = 0
+    const currentLayout = layoutRef.current
+    const currentBg = backgroundRef.current
+    const pCount = participantsRef.current.length
+
+    if (currentLayout === 'strip') {
+       if (pCount >= 3) W = 1200
+       const cw = W - pad * 2
+       let ratio = 0.75
+       if (pCount === 2) ratio = 2 / 3
+       if (pCount === 3) ratio = 9 / 21
+       if (pCount >= 4) ratio = 9 / 16
+       const ch = cw * ratio
+       H = pad * 2 + ch * 4 + gap * 3 + 70
+       cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad, y: pad + i * (ch + gap), w: cw, h: ch }))
+    } else if (currentLayout === 'grid') {
+       const cw = (W - pad * 2 - gap) / 2
+       H = pad * 2 + cw * 2 + gap + 70
+       cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
+    } else if (currentLayout === 'asymmetric') {
+       const colWidth = (W - pad * 2 - gap * 2) / 3
+       const bigW = colWidth * 2 + gap
+       const bigH = colWidth * 3 + gap * 2
+       H = pad * 2 + bigH + 70
+       cellDefs = [
+          { x: pad, y: pad, w: bigW, h: bigH },
+          { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
+          { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
+          { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
+       ]
+    } else {
+       const cw = W - pad * 2
+       H = pad * 2 + cw + 100
+       cellDefs = [{ x: pad, y: pad, w: cw, h: cw }]
+    }
+
     canvas.width = W
     canvas.height = H
 
-    try {
-      const stream = canvas.captureStream(30)
-      const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264')
-        ? { mimeType: 'video/mp4;codecs=h264' }
-        : { mimeType: 'video/webm' }
-
-      const recorder = new MediaRecorder(stream, options)
-      recordedChunksRef.current = []
-      
-      recorder.ondataavailable = (e) => { 
-        if (e.data.size > 0) recordedChunksRef.current.push(e.data) 
-      }
-      
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: options.mimeType })
-        setVideoUrl(URL.createObjectURL(blob))
-      }
-      
-      recorder.start()
-      mediaRecorderRef.current = recorder
-      requestAnimationFrame(drawVideoLoop)
-    } catch (err) {
-      console.error("Video layout synchronization streaming failed:", err)
+    const stream = canvas.captureStream(30)
+    const options = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? {mimeType: 'video/mp4;codecs=h264'} : {mimeType: 'video/webm'}
+    const stripRecorder = new MediaRecorder(stream, options)
+    const chunks: Blob[] = []
+    
+    stripRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+    stripRecorder.onstop = () => {
+       const finalBlob = new Blob(chunks, { type: options.mimeType })
+       setVideoUrl(URL.createObjectURL(finalBlob))
+       vids.forEach(v => URL.revokeObjectURL(v.src))
+       URL.revokeObjectURL(url)
     }
-  }
 
-  function stopVideoRecording() {
-    if (mediaRecorderRef.current?.state === 'recording') {
-        mediaRecorderRef.current.stop()
+    stripRecorder.start()
+    vids.forEach(v => v.play().catch(()=>{}))
+
+    const startTime = performance.now()
+    let frozen = false
+
+    const drawStripFrame = () => {
+       if (stripRecorder.state !== 'recording') return
+       const elapsed = performance.now() - startTime
+
+       if (elapsed >= COUNTDOWN_MS && !frozen) {
+          frozen = true
+          vids.forEach(v => v.pause())
+       }
+
+       if (elapsed >= COUNTDOWN_MS + 2000) { // 2s visual freeze effect
+          stripRecorder.stop()
+          return
+       }
+
+       if (currentBg.id === 'sunset') {
+          const g = ctx.createLinearGradient(0, 0, W, H)
+          g.addColorStop(0, '#f7b267')
+          g.addColorStop(1, '#f25f5c')
+          ctx.fillStyle = g
+       } else {
+          ctx.fillStyle = currentBg.swatch.startsWith('linear') ? '#fdf3ec' : currentBg.swatch
+       }
+       ctx.fillRect(0, 0, W, H)
+
+       cellDefs.forEach((c, i) => {
+          if (i >= shots) return
+          ctx.save()
+          roundRect(ctx, c.x, c.y, c.w, c.h, 24)
+          ctx.clip()
+          drawImageCover(ctx, vids[i], c.x, c.y, c.w, c.h)
+          ctx.restore()
+       })
+
+       const isDarkBg = currentBg.id === 'ink'
+       ctx.fillStyle = isDarkBg ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
+       ctx.font = '600 22px monospace'
+       ctx.textAlign = 'center'
+       if ('letterSpacing' in ctx) { (ctx as any).letterSpacing = '0.3em' }
+       ctx.fillText(`SNAPORY · ${new Date().getFullYear()}`, W / 2, H - 32)
+
+       requestAnimationFrame(drawStripFrame)
     }
+    
+    requestAnimationFrame(drawStripFrame)
   }
 
   function captureLocalFrame(shotIndex: number) {
@@ -341,13 +359,14 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       ...framesRef.current.filter((f) => !(f.participantId === peerId && f.shotIndex === shotIndex)),
       { participantId: peerId, shotIndex, dataUrl },
     ]
-    cacheImage(`${peerId}-${shotIndex}`, dataUrl)
-    
     if (mode === 'room') sendFrameToAll(shotIndex, dataUrl)
   }
 
   useEffect(() => {
-    if (!plan) return
+    if (!plan) {
+       liveRecorderStartedRef.current = false
+       return
+    }
     const id = setInterval(() => setNowTick((t) => t + 1), 100)
     return () => clearInterval(id)
   }, [plan])
@@ -355,9 +374,15 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   useEffect(() => {
     if (!plan) return
     const elapsed = Date.now() - plan.startAtEpochMs
+
+    if (elapsed >= 0 && !liveRecorderStartedRef.current) {
+       liveRecorderStartedRef.current = true
+       shotIntervalRef.current = plan.intervalMs
+       startRawRecording()
+    }
+
     const rawIndex = Math.floor(elapsed / plan.intervalMs)
     const shotIndex = Math.min(Math.max(rawIndex, 0), plan.totalShots - 1)
-    currentActiveShotIndexRef.current = shotIndex
 
     if (elapsed >= shotIndex * plan.intervalMs + COUNTDOWN_MS && !capturedShotsRef.current.has(shotIndex) && elapsed >= 0) {
       capturedShotsRef.current.add(shotIndex)
@@ -366,23 +391,20 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       setTimeout(() => setFlash(false), 250)
     }
 
-    const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS && capturedShotsRef.current.size >= plan.totalShots
-      
+    const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS
     if (done && !finalizeTimerRef.current) {
-      // Freezes the grid for FINALIZE_GRACE_MS (2s) before finalizing the video recording
       finalizeTimerRef.current = setTimeout(() => {
-        stopVideoRecording()
+        if (rawRecorderRef.current?.state === 'recording') rawRecorderRef.current.stop()
         finalizeTimerRef.current = null
         setPlan(null)
         setCapturing(false)
         setShootResult({ frames: framesRef.current, participants })
-      }, FINALIZE_GRACE_MS)
+      }, 500)
     }
   }, [nowTick, plan])
 
   function startCapture() {
     if (capturing || !granted || (!isHost && mode === 'room')) return
-    
     const newPlan: CountdownMessage = {
       instigatorId: peerId,
       totalShots: shots,
@@ -391,9 +413,6 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       layoutId: layout,
       backgroundId: background.id
     }
-    
-    startVideoRecording()
-
     if (mode === 'room') {
       broadcastCountdown(newPlan)
       handleCountdown(newPlan) 
@@ -476,7 +495,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
             ) : null}
 
             {(!p.isYou || !granted) && !remotePeers.get(p.id)?.stream && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground bg-zinc-900/50">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white bg-zinc-900/50">
                 <span className="flex items-center gap-1 text-xs">
                   <Camera className="size-3.5" />
                   {p.isYou ? 'camera off' : 'connecting…'}
@@ -493,7 +512,9 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
         ))}
       </div>
 
-      <canvas ref={combinedCanvasRef} className="hidden" />
+      {/* Hidden processing render engines */}
+      <canvas ref={rawCanvasRef} className="hidden" />
+      <canvas ref={stripCanvasRef} className="hidden" />
 
       <div className="mt-6 flex flex-col items-center justify-center gap-4">
         <div className="flex items-center justify-center gap-6">
