@@ -221,13 +221,18 @@ export function BoothView({
       const cw = (W - pad * 2 - gap) / 2
       cellDefs = [0, 1, 2, 3].map((i) => ({ x: pad + (i % 2) * (cw + gap), y: pad + Math.floor(i / 2) * (cw + gap), w: cw, h: cw }))
     } else if (layout === 'asymmetric') {
-      const big = ((W - pad * 2) * 2) / 3 - gap / 2
-      const small = (W - pad * 2) / 3 - gap / 2
+      // Same fix as edit-view.tsx: the big cell spans 2 cols x 3 rows, so
+      // it must be a rectangle sized to match the 3 stacked small cells,
+      // not a square — otherwise it no longer matches the on-screen
+      // Photostrip layout and can run past the canvas bounds.
+      const colWidth = (W - pad * 2 - gap * 2) / 3
+      const bigW = colWidth * 2 + gap
+      const bigH = colWidth * 3 + gap * 2
       cellDefs = [
-        { x: pad, y: pad, w: big, h: big },
-        { x: pad + big + gap, y: pad, w: small, h: small },
-        { x: pad + big + gap, y: pad + small + gap, w: small, h: small },
-        { x: pad + big + gap, y: pad + (small + gap) * 2, w: small, h: small },
+        { x: pad, y: pad, w: bigW, h: bigH },
+        { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
+        { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
+        { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
       ]
     } else {
       const cw = W - pad * 2

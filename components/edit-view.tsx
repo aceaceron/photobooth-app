@@ -181,14 +181,20 @@ export function EditView({
           h: cw,
         }))
       } else if (layout === 'asymmetric') {
-        const big = ((W - pad * 2) * 2) / 3 - gap / 2
-        const small = (W - pad * 2) / 3 - gap / 2
-        H = pad * 2 + big + 56
+        // The big cell spans 2 columns x 3 rows (see Photostrip's
+        // col-span-2 row-span-3), so it's a tall rectangle, not a square.
+        // Its height must equal the 3 stacked small cells' combined
+        // height + gaps, or the canvas ends up too short and the bottom
+        // photo(s) get clipped off past the edge of the exported image.
+        const colWidth = (W - pad * 2 - gap * 2) / 3
+        const bigW = colWidth * 2 + gap
+        const bigH = colWidth * 3 + gap * 2
+        H = pad * 2 + bigH + 56
         cellDefs = [
-          { x: pad, y: pad, w: big, h: big },
-          { x: pad + big + gap, y: pad, w: small, h: small },
-          { x: pad + big + gap, y: pad + small + gap, w: small, h: small },
-          { x: pad + big + gap, y: pad + (small + gap) * 2, w: small, h: small },
+          { x: pad, y: pad, w: bigW, h: bigH },
+          { x: pad + bigW + gap, y: pad, w: colWidth, h: colWidth },
+          { x: pad + bigW + gap, y: pad + colWidth + gap, w: colWidth, h: colWidth },
+          { x: pad + bigW + gap, y: pad + (colWidth + gap) * 2, w: colWidth, h: colWidth },
         ]
       } else {
         const cw = W - pad * 2
