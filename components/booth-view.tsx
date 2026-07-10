@@ -9,6 +9,10 @@ import { EditView } from '@/components/edit-view'
 import { BACKGROUNDS, LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
 import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
 import { roundRect, drawImageCover, stripCellRadius, drawStripWatermark, fillPresetBackground, loadImage } from '@/lib/canvas-compose'
+import { FaceFilterCanvas } from '@/components/face-filter-canvas'
+import { FilterMenu } from '@/components/filter-menu'
+import { useFaceTracking } from '@/hooks/use-face-tracking'
+import { FILTERS, drawFilter, type FilterId } from '@/lib/ar-filters'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -50,6 +54,14 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   const [hostFinalized, setHostFinalized] = useState(false)
 
   const localVideoRef = useRef<HTMLVideoElement>(null)
+
+  // AR filters: only run the (comparatively expensive) face landmark model
+  // when a face-tracked filter is actually selected.
+  const [activeFilter, setActiveFilter] = useState<FilterId>('none')
+  const filterNeedsTracking = FILTERS.find((f) => f.id === activeFilter)?.needsFaceTracking ?? false
+  const faceTrackingEnabled = granted && activeFilter !== 'none' && filterNeedsTracking
+  const { resultRef: faceResultRef, error: faceTrackingError } = useFaceTracking(localVideoRef, faceTrackingEnabled)
+
   const framesRef = useRef<CapturedFrame[]>([])
   const capturedShotsRef = useRef<Set<number>>(new Set())
   const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -167,6 +179,10 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   useEffect(() => {
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
+
+  useEffect(() => {
+    if (faceTrackingError) setActiveFilter('none')
+  }, [faceTrackingError])
 
   // Sequentially mapping live video & frozen cached layouts
   const drawVideoLoop = useCallback(() => {
@@ -374,10 +390,27 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     
+    ctx.save()
     ctx.translate(canvas.width, 0)
     ctx.scale(-1, 1)
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    
+    ctx.restore()
+
+    // Filter shapes are drawn in normal (unflipped) canvas space — see
+    // lib/ar-filters.ts — so they must sit outside the ctx.scale(-1, 1)
+    // block above, or text like the VHS timestamp would render backwards.
+    if (activeFilter !== 'none') {
+      drawFilter(ctx, activeFilter, {
+        boxW: canvas.width,
+        boxH: canvas.height,
+        videoW: video.videoWidth || canvas.width,
+        videoH: video.videoHeight || canvas.height,
+        landmarks: faceResultRef.current.landmarks,
+        faceDetected: faceResultRef.current.faceDetected,
+        t: performance.now() / 1000,
+      })
+    }
+
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
     framesRef.current = [
@@ -515,7 +548,16 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
         {participants.map((p) => (
           <div key={p.id} className="relative aspect-video overflow-hidden rounded-3xl border border-border/60 bg-muted">
             {p.isYou && granted ? (
-              <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 size-full scale-x-[-1] object-cover" />
+              <>
+                <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 size-full scale-x-[-1] object-cover" />
+                <FaceFilterCanvas
+                  videoRef={localVideoRef}
+                  filterId={activeFilter}
+                  active={activeFilter !== 'none'}
+                  resultRef={faceResultRef}
+                  className="pointer-events-none absolute inset-0 size-full"
+                />
+              </>
             ) : !p.isYou ? (
               <RemoteVideoTile stream={remotePeers.get(p.id)?.stream ?? null} />
             ) : null}
@@ -537,6 +579,15 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
           </div>
         ))}
       </div>
+
+      {granted && (
+        <div className="mt-4">
+          <FilterMenu active={activeFilter} onChange={setActiveFilter} disabled={!!plan || capturing} />
+          {faceTrackingError && (
+            <p className="mt-1.5 text-center text-xs text-destructive">{faceTrackingError}</p>
+          )}
+        </div>
+      )}
 
       <canvas ref={combinedCanvasRef} className="hidden" />
 
