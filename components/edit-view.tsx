@@ -5,7 +5,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { Photostrip } from '@/components/photostrip'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { drawImageCover, loadImage, roundRect } from '@/lib/canvas-compose'
+import { drawImageCover, loadImage, roundRect, stripCellRadius, drawStripWatermark } from '@/lib/canvas-compose'
 import {
   DEFAULT_FILTERS,
   LAYOUTS,
@@ -225,7 +225,7 @@ export function EditView({
         const c = cellDefs[i]
         const dataUrls = shotFrames[i] ?? []
         ctx.save()
-        roundRect(ctx, c.x, c.y, c.w, c.h, 16)
+        roundRect(ctx, c.x, c.y, c.w, c.h, stripCellRadius(W))
         ctx.clip()
 
         if (dataUrls.length === 0) {
@@ -255,10 +255,7 @@ export function EditView({
         ctx.restore()
       }
 
-      ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
-      ctx.font = '600 18px monospace'
-      ctx.textAlign = 'center'
-      ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
+      drawStripWatermark(ctx, W, H, background.id === 'ink')
 
       const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
       if (!blob) return

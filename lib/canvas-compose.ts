@@ -76,3 +76,45 @@ export function roundRect(
   ctx.arcTo(x, y, x + w, y, r)
   ctx.closePath()
 }
+
+/**
+ * The PNG export and the video canvas are rendered at a much higher
+ * resolution (900-1200px wide) than the on-screen Photostrip preview
+ * (roughly 150-220px wide), so a literal pixel value copied from one to
+ * the other doesn't look the same — that's why the exports used to look
+ * more sharply-cornered and coarser-lettered than the live preview's
+ * `rounded-md` cells and `text-[9px]` watermark. Deriving both as a
+ * fraction of the canvas width keeps the *proportions* consistent with
+ * the CSS design instead, and keeps the PNG and video matching each
+ * other since they now both call the same helpers.
+ */
+const STRIP_RADIUS_RATIO = 0.024
+const STRIP_FONT_RATIO = 0.03
+
+export function stripCellRadius(canvasWidth: number): number {
+  return Math.round(canvasWidth * STRIP_RADIUS_RATIO)
+}
+
+/** Renders the "SNAPORY · <year>" watermark, scaled and weighted to match
+ * the Photostrip component's `font-mono font-medium tracking-widest
+ * text-[9px] uppercase` treatment, with the same background-aware
+ * light/dark contrast color used on screen. */
+export function drawStripWatermark(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  isDarkBg: boolean,
+) {
+  const fontSize = Math.round(width * STRIP_FONT_RATIO)
+  ctx.save()
+  ctx.fillStyle = isDarkBg ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
+  ctx.font = `500 ${fontSize}px ui-monospace, Menlo, Consolas, monospace`
+  ctx.textAlign = 'center'
+  // Approximates Tailwind's tracking-widest at this font size; ignored
+  // harmlessly by engines that don't support ctx.letterSpacing yet.
+  try {
+    ;(ctx as unknown as { letterSpacing: string }).letterSpacing = `${Math.round(fontSize * 0.18)}px`
+  } catch {}
+  ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, width / 2, height - fontSize * 1.5)
+  ctx.restore()
+}

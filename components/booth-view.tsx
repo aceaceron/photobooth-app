@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { EditView } from '@/components/edit-view'
 import { BACKGROUNDS, LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
 import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
-import { roundRect, drawImageCover } from '@/lib/canvas-compose'
+import { roundRect, drawImageCover, stripCellRadius, drawStripWatermark } from '@/lib/canvas-compose'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -177,7 +177,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
 
     cellDefs.forEach((c, i) => {
       ctx.save()
-      roundRect(ctx, c.x, c.y, c.w, c.h, 16)
+      roundRect(ctx, c.x, c.y, c.w, c.h, stripCellRadius(W))
       ctx.clip()
 
       const len = participants.length
@@ -202,8 +202,11 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
             ctx.fillRect(dx, dy, subW_gross, subH_gross)
           }
         })
-      // If the shot is currently actively ticking, map live active videos directly into stream
-      } else if (i === currentActiveShotIndexRef.current && videos.length > 0) {
+      // Every cell that hasn't been captured yet plays the live feed at
+      // the same time — not just the single "current" shot — so all
+      // pending rows are moving simultaneously, matching what's on screen,
+      // until each one freezes the instant its own shot is taken.
+      } else if (videos.length > 0) {
         videos.forEach((video, idx) => {
           const col = idx % cols
           const row = Math.floor(idx / cols)
@@ -227,7 +230,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
           ctx.drawImage(video, sx, sy, sw, sh, 0, 0, subW_gross, subH_gross)
           ctx.restore()
         })
-      // Future shots wait empty
+      // No camera feed available yet at all
       } else {
         ctx.fillStyle = '#e5e0d8'
         ctx.fillRect(c.x, c.y, c.w, c.h)
@@ -235,11 +238,9 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       ctx.restore()
     })
 
-    // Dynamic contrast text based on the background
-    ctx.fillStyle = background.id === 'ink' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)'
-    ctx.font = '600 18px monospace'
-    ctx.textAlign = 'center'
-    ctx.fillText(`SNAPORY \u00b7 ${new Date().getFullYear()}`, W / 2, H - 28)
+    // Dynamic contrast text based on the background, scaled and styled to
+    // match the Photostrip component's watermark treatment.
+    drawStripWatermark(ctx, W, H, background.id === 'ink')
 
     requestAnimationFrame(drawVideoLoop)
   }, [layout, background, participants.length])
