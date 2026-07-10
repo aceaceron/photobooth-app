@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { EditView } from '@/components/edit-view'
 import { BACKGROUNDS, LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
 import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
-import { roundRect, drawImageCover, stripCellRadius, drawStripWatermark } from '@/lib/canvas-compose'
+import { roundRect, drawImageCover, stripCellRadius, drawStripWatermark, fillPresetBackground, loadImage } from '@/lib/canvas-compose'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -57,11 +57,22 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   const combinedCanvasRef = useRef<HTMLCanvasElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
-  const currentActiveShotIndexRef = useRef<number>(0)
+  // Epoch ms when the currently-active shot's countdown began. Previously
+  // each shot's start was derived purely from a fixed schedule
+  // (startAtEpochMs + i * intervalMs), which baked in a dead GAP_MS pause
+  // between capturing one shot and starting the next one's countdown. Now
+  // it's set explicitly, right when each photo is actually taken, so the
+  // next shot's countdown — and therefore its live window in the video —
+  // starts exactly when the previous image was taken, with no gap.
+  const activeShotStartRef = useRef<number>(0)
+  const [activeShotIndex, setActiveShotIndex] = useState(0)
   
   // Cache to store explicit frame images to build the sequential animated video strip natively
   const imageCacheRef = useRef<Record<string, HTMLImageElement>>({})
   const layoutMetricsRef = useRef({ W: 900, H: 1600, cellDefs: [] as any[] })
+  // Custom (uploaded) backdrop image, preloaded once so drawVideoLoop can
+  // draw it synchronously every frame instead of awaiting it each time.
+  const customBgImageRef = useRef<HTMLImageElement | null>(null)
 
   const localColor = colorForId(displayName + roomCode)
 
@@ -89,9 +100,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       onSyncTemplate(msg.layoutId, resolvedBackground)
     }
     
+    const firstShotStart = Date.now() + msg.delayMs
+    activeShotStartRef.current = firstShotStart
+    setActiveShotIndex(0)
+
     setPlan({
       ...msg,
-      startAtEpochMs: Date.now() + msg.delayMs
+      startAtEpochMs: firstShotStart
     })
   }, [onSyncTemplate, background])
 
@@ -163,15 +178,20 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     const { W, H, cellDefs } = layoutMetricsRef.current
     if (W === 0) return 
 
-    if (background.id === 'sunset') {
-      const g = ctx.createLinearGradient(0, 0, W, H)
-      g.addColorStop(0, '#f7b267')
-      g.addColorStop(1, '#f25f5c')
-      ctx.fillStyle = g
+    if (background.id === 'custom') {
+      if (customBgImageRef.current) {
+        drawImageCover(ctx, customBgImageRef.current, 0, 0, W, H)
+      } else {
+        // Still loading — hold a neutral fill rather than leaving
+        // whatever fillStyle canvas last had (which used to show as
+        // solid black while the image loaded, or forever if it never
+        // loaded at all).
+        ctx.fillStyle = '#fdf3ec'
+        ctx.fillRect(0, 0, W, H)
+      }
     } else {
-      ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
+      fillPresetBackground(ctx, background, 0, 0, W, H)
     }
-    ctx.fillRect(0, 0, W, H)
 
     const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
 
@@ -180,45 +200,58 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       roundRect(ctx, c.x, c.y, c.w, c.h, stripCellRadius(W))
       ctx.clip()
 
-      const len = participants.length
-      const cols = len === 1 ? 1 : len === 3 ? 3 : 2
-      const rows = Math.ceil(len / cols)
       const gapPx = 2
-      const subW_gross = (c.w - (cols - 1) * gapPx) / cols
-      const subH_gross = (c.h - (rows - 1) * gapPx) / rows
 
-      // If the shot was already taken, draw the frozen cache frame for this participant
+      // If the shot was already taken, draw the frozen cache frame(s) for
+      // this shot. Tile by however many photos actually exist for this
+      // shot — same as the PNG export — rather than the current live
+      // participant count, so a shot that only 2 people were in doesn't
+      // get laid out in a 3-tile grid just because a 3rd person joined
+      // afterward (which used to make the video's grid differ from the
+      // PNG's for the same shot).
       if (capturedShotsRef.current.has(i)) {
-        participants.forEach((p, idx) => {
-          const col = idx % cols
-          const row = Math.floor(idx / cols)
-          const dx = c.x + col * (subW_gross + gapPx)
-          const dy = c.y + row * (subH_gross + gapPx)
-          const img = imageCacheRef.current[`${p.id}-${i}`]
-          if (img) {
-            drawImageCover(ctx, img, dx, dy, subW_gross, subH_gross)
-          } else {
-            ctx.fillStyle = '#e5e0d8'
-            ctx.fillRect(dx, dy, subW_gross, subH_gross)
-          }
-        })
+        const shotImages = participants
+          .map((p) => imageCacheRef.current[`${p.id}-${i}`])
+          .filter((img): img is HTMLImageElement => !!img)
+
+        if (shotImages.length === 0) {
+          ctx.fillStyle = '#e5e0d8'
+          ctx.fillRect(c.x, c.y, c.w, c.h)
+        } else {
+          const len = shotImages.length
+          const cols = len === 1 ? 1 : len === 3 ? 3 : 2
+          const rows = Math.ceil(len / cols)
+          const subW = (c.w - (cols - 1) * gapPx) / cols
+          const subH = (c.h - (rows - 1) * gapPx) / rows
+          shotImages.forEach((img, idx) => {
+            const col = idx % cols
+            const row = Math.floor(idx / cols)
+            drawImageCover(ctx, img, c.x + col * (subW + gapPx), c.y + row * (subH + gapPx), subW, subH)
+          })
+        }
       // Every cell that hasn't been captured yet plays the live feed at
       // the same time — not just the single "current" shot — so all
       // pending rows are moving simultaneously, matching what's on screen,
       // until each one freezes the instant its own shot is taken.
       } else if (videos.length > 0) {
+        const len = participants.length
+        const cols = len === 1 ? 1 : len === 3 ? 3 : 2
+        const rows = Math.ceil(len / cols)
+        const subW = (c.w - (cols - 1) * gapPx) / cols
+        const subH = (c.h - (rows - 1) * gapPx) / rows
+
         videos.forEach((video, idx) => {
           const col = idx % cols
           const row = Math.floor(idx / cols)
-          const dx = c.x + col * (subW_gross + gapPx)
-          const dy = c.y + row * (subH_gross + gapPx)
+          const dx = c.x + col * (subW + gapPx)
+          const dy = c.y + row * (subH + gapPx)
 
           ctx.save()
-          ctx.translate(dx + subW_gross, dy)
+          ctx.translate(dx + subW, dy)
           ctx.scale(-1, 1)
 
           const srcRatio = video.videoWidth / video.videoHeight
-          const dstRatio = subW_gross / subH_gross
+          const dstRatio = subW / subH
           let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight
           if (srcRatio > dstRatio) {
             sw = video.videoHeight * dstRatio
@@ -227,7 +260,7 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
             sh = video.videoWidth / dstRatio
             sy = (video.videoHeight - sh) / 2
           }
-          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, subW_gross, subH_gross)
+          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, subW, subH)
           ctx.restore()
         })
       // No camera feed available yet at all
@@ -290,6 +323,15 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
     layoutMetricsRef.current = { W, H, cellDefs }
     canvas.width = W
     canvas.height = H
+
+    if (background.id === 'custom') {
+      customBgImageRef.current = null
+      loadImage(background.swatch)
+        .then((img) => { customBgImageRef.current = img })
+        .catch(() => {})
+    } else {
+      customBgImageRef.current = null
+    }
 
     try {
       const stream = canvas.captureStream(30)
@@ -355,31 +397,35 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
 
   useEffect(() => {
     if (!plan) return
-    const elapsed = Date.now() - plan.startAtEpochMs
-    const rawIndex = Math.floor(elapsed / plan.intervalMs)
-    const shotIndex = Math.min(Math.max(rawIndex, 0), plan.totalShots - 1)
-    currentActiveShotIndexRef.current = shotIndex
+    const now = Date.now()
+    const elapsed = now - activeShotStartRef.current
+    if (elapsed < 0) return
 
-    if (elapsed >= shotIndex * plan.intervalMs + COUNTDOWN_MS && !capturedShotsRef.current.has(shotIndex) && elapsed >= 0) {
-      capturedShotsRef.current.add(shotIndex)
-      captureLocalFrame(shotIndex)
+    if (elapsed >= COUNTDOWN_MS && !capturedShotsRef.current.has(activeShotIndex)) {
+      capturedShotsRef.current.add(activeShotIndex)
+      captureLocalFrame(activeShotIndex)
       setFlash(true)
       setTimeout(() => setFlash(false), 250)
-    }
 
-    const done = elapsed >= (plan.totalShots - 1) * plan.intervalMs + COUNTDOWN_MS && capturedShotsRef.current.size >= plan.totalShots
-      
-    if (done && !finalizeTimerRef.current) {
-      // Freezes the grid for FINALIZE_GRACE_MS (2s) before finalizing the video recording
-      finalizeTimerRef.current = setTimeout(() => {
-        stopVideoRecording()
-        finalizeTimerRef.current = null
-        setPlan(null)
-        setCapturing(false)
-        setShootResult({ frames: framesRef.current, participants })
-      }, FINALIZE_GRACE_MS)
+      const next = activeShotIndex + 1
+      if (next < plan.totalShots) {
+        // The next shot's countdown starts right now — the exact moment
+        // the previous photo was taken — instead of at some later fixed
+        // schedule slot.
+        activeShotStartRef.current = now
+        setActiveShotIndex(next)
+      } else if (!finalizeTimerRef.current) {
+        // Freezes the grid for FINALIZE_GRACE_MS (2s) before finalizing the video recording
+        finalizeTimerRef.current = setTimeout(() => {
+          stopVideoRecording()
+          finalizeTimerRef.current = null
+          setPlan(null)
+          setCapturing(false)
+          setShootResult({ frames: framesRef.current, participants })
+        }, FINALIZE_GRACE_MS)
+      }
     }
-  }, [nowTick, plan])
+  }, [nowTick, plan, activeShotIndex])
 
   function startCapture() {
     if (capturing || !granted || (!isHost && mode === 'room')) return
@@ -405,15 +451,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
 
   const displayCount = (() => {
     if (!plan) return null
-    const elapsed = Date.now() - plan.startAtEpochMs
+    const elapsed = Date.now() - activeShotStartRef.current
     if (elapsed < 0) return 3 
-    const shotIndex = Math.min(Math.max(Math.floor(elapsed / plan.intervalMs), 0), plan.totalShots - 1)
-    const timeIntoShot = elapsed - shotIndex * plan.intervalMs
-    if (timeIntoShot >= COUNTDOWN_MS) return null
-    return Math.max(1, Math.ceil((COUNTDOWN_MS - timeIntoShot) / 1000))
+    if (elapsed >= COUNTDOWN_MS) return null
+    return Math.max(1, Math.ceil((COUNTDOWN_MS - elapsed) / 1000))
   })()
 
-  const currentShotIndex = plan ? Math.min(Math.max(Math.floor((Date.now() - plan.startAtEpochMs) / plan.intervalMs), 0), plan.totalShots - 1) : 0
+  const currentShotIndex = activeShotIndex
 
   if (shootResult) {
     return (

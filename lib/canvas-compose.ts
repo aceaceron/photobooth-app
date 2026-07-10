@@ -60,6 +60,50 @@ export function drawImageCover(
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h)
 }
 
+/**
+ * Fills a rect with a preset background. Canvas can't parse a raw CSS
+ * gradient string handed to ctx.fillStyle — it silently keeps whatever
+ * fillStyle was already set (defaulting to black), which is why the
+ * "Confetti" backdrop (a CSS radial-gradient swatch) rendered as solid
+ * black in the video export instead of the dotted pattern seen on screen
+ * and in the PNG. Rendering real canvas gradients/patterns here instead
+ * keeps the video, PNG, and on-screen Photostrip all showing the same
+ * background. 'custom' (uploaded image) backgrounds are drawn by the
+ * caller since loading that image is async.
+ */
+export function fillPresetBackground(
+  ctx: CanvasRenderingContext2D,
+  bg: { id: string; swatch: string },
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  if (bg.id === 'sunset') {
+    const g = ctx.createLinearGradient(x, y, x + w, y + h)
+    g.addColorStop(0, '#f7b267')
+    g.addColorStop(1, '#f25f5c')
+    ctx.fillStyle = g
+    ctx.fillRect(x, y, w, h)
+  } else if (bg.id === 'dots') {
+    ctx.fillStyle = '#fdf3ec'
+    ctx.fillRect(x, y, w, h)
+    ctx.fillStyle = '#f26b5e'
+    const spacing = 28
+    const radius = 3
+    for (let py = spacing / 2; py < h; py += spacing) {
+      for (let px = spacing / 2; px < w; px += spacing) {
+        ctx.beginPath()
+        ctx.arc(x + px, y + py, radius, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  } else {
+    ctx.fillStyle = bg.swatch
+    ctx.fillRect(x, y, w, h)
+  }
+}
+
 export function roundRect(
   ctx: CanvasRenderingContext2D,
   x: number,

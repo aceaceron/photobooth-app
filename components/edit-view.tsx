@@ -5,7 +5,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { Photostrip } from '@/components/photostrip'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { drawImageCover, loadImage, roundRect, stripCellRadius, drawStripWatermark } from '@/lib/canvas-compose'
+import { drawImageCover, loadImage, roundRect, stripCellRadius, drawStripWatermark, fillPresetBackground } from '@/lib/canvas-compose'
 import {
   DEFAULT_FILTERS,
   LAYOUTS,
@@ -202,12 +202,7 @@ export function EditView({
       canvas.width = W
       canvas.height = H
 
-      if (background.id === 'sunset') {
-        const g = ctx.createLinearGradient(0, 0, W, H)
-        g.addColorStop(0, '#f7b267')
-        g.addColorStop(1, '#f25f5c')
-        ctx.fillStyle = g
-      } else if (background.id === 'custom') {
+      if (background.id === 'custom') {
         try {
           const bgImg = await loadImage(background.swatch)
           ctx.save()
@@ -215,11 +210,11 @@ export function EditView({
           ctx.restore()
         } catch {
           ctx.fillStyle = '#fdf3ec'
+          ctx.fillRect(0, 0, W, H)
         }
       } else {
-        ctx.fillStyle = background.swatch.startsWith('linear') ? '#fdf3ec' : background.swatch
+        fillPresetBackground(ctx, background, 0, 0, W, H)
       }
-      if (background.id !== 'custom') ctx.fillRect(0, 0, W, H)
 
       for (let i = 0; i < cellDefs.length; i++) {
         const c = cellDefs[i]
