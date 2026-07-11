@@ -31,7 +31,6 @@ export type FilterId =
   | 'thug'
   | 'floral'
   | 'cyberpunk'
-  | 'halo'
   | 'glitch'
   | 'sketch'
   | 'timestamp'
@@ -51,7 +50,6 @@ export const FILTERS: FilterDef[] = [
   { id: 'thug', name: 'Thug Life', emoji: '😎', needsFaceTracking: true },
   { id: 'floral', name: 'Floral Crown', emoji: '🌸', needsFaceTracking: true },
   { id: 'cyberpunk', name: 'Cyberpunk', emoji: '🤖', needsFaceTracking: true },
-  { id: 'halo', name: 'Angelic', emoji: '😇', needsFaceTracking: true },
   { id: 'glitch', name: 'Glitch', emoji: '📺', needsFaceTracking: false },
   { id: 'sketch', name: 'Sketch', emoji: '✏️', needsFaceTracking: false },
   { id: 'timestamp', name: 'VHS', emoji: '📼', needsFaceTracking: false },
@@ -117,12 +115,10 @@ function dist(a: Point, b: Point): number {
  * "right" (e.g. cheekLeft/cheekRight) for a direction vector can land
  * you close to 180° out depending on the model's internal indexing,
  * silently flipping "up" into "down" for anything anchored via
- * cos(angle)/sin(angle) offsets — which is exactly why the halo used to
- * render down near the nose instead of above the head. Forcing dx >= 0
- * removes that spurious ~180° ambiguity while preserving the real head
- * tilt (negating both dx and dy rotates the angle by exactly ±π, which
- * cancels out an erroneous π offset but leaves a genuine small tilt
- * angle unchanged).
+ * cos(angle)/sin(angle) offsets. Forcing dx >= 0 removes that spurious
+ * ~180° ambiguity while preserving the real head tilt (negating both dx
+ * and dy rotates the angle by exactly ±π, which cancels out an
+ * erroneous π offset but leaves a genuine small tilt angle unchanged).
  */
 function faceAngle(a: Point, b: Point): number {
   let dx = b.x - a.x
@@ -190,9 +186,6 @@ export function drawFilter(
       break
     case 'cyberpunk':
       drawCyberpunkVisor(ctx, frame)
-      break
-    case 'halo':
-      drawAngelicHalo(ctx, frame)
       break
   }
 }
@@ -494,52 +487,7 @@ function drawCyberpunkVisor(ctx: CanvasRenderingContext2D, frame: FrameContext) 
 }
 
 // ---------------------------------------------------------------------
-// 6. Angelic Halo — tilted glowing ring above the topmost head landmark
-// ---------------------------------------------------------------------
-function drawAngelicHalo(ctx: CanvasRenderingContext2D, frame: FrameContext) {
-  const lm = frame.landmarks!
-  const p = (i: number) => mapPoint(lm[i], frame)
-
-  const forehead = p(LM.foreheadTop)
-  const chin = p(LM.chin)
-  const cheekL = p(LM.cheekLeft)
-  const cheekR = p(LM.cheekRight)
-
-  const angle = faceAngle(cheekL, cheekR)
-  const faceW = dist(cheekL, cheekR)
-  const faceH = dist(forehead, chin)
-
-  // Anchored a bit above the topmost (forehead) landmark, along the
-  // face's own "up" direction so it tilts naturally with head tilt.
-  const cx = forehead.x - Math.sin(angle) * faceH * 0.55
-  const cy = forehead.y - Math.cos(angle) * faceH * 0.55
-
-  ctx.save()
-  ctx.translate(cx, cy)
-  ctx.rotate(angle - 0.18) // slight extra tilt for a "floating" feel
-  ctx.scale(1, 0.34) // flattened into an ellipse, as if viewed at an angle
-  ctx.globalCompositeOperation = 'screen'
-
-  const r = faceW * 0.62
-
-  ctx.shadowColor = 'rgba(255, 244, 190, 0.95)'
-  ctx.shadowBlur = r * 0.5
-  ctx.strokeStyle = 'rgba(255, 250, 220, 0.9)'
-  ctx.lineWidth = Math.max(3, r * 0.1)
-  ctx.beginPath()
-  ctx.arc(0, 0, r, 0, Math.PI * 2)
-  ctx.stroke()
-
-  ctx.shadowBlur = r * 0.22
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
-  ctx.lineWidth = Math.max(1.5, r * 0.03)
-  ctx.stroke()
-
-  ctx.restore()
-}
-
-// ---------------------------------------------------------------------
-// 7. Chromatic Aberration (Glitch) — whole-frame pixel manipulation,
+// 6. Chromatic Aberration (Glitch) — whole-frame pixel manipulation,
 //    no face tracking needed. Reads back the already-drawn video pixels
 //    directly from ctx.canvas.
 // ---------------------------------------------------------------------
@@ -592,7 +540,7 @@ function applyChromaticAberration(ctx: CanvasRenderingContext2D, frame: FrameCon
 }
 
 // ---------------------------------------------------------------------
-// 8. Pencil Sketch — grayscale + 3x3 Laplacian edge-detection
+// 7. Pencil Sketch — grayscale + 3x3 Laplacian edge-detection
 //    convolution, no face tracking needed.
 // ---------------------------------------------------------------------
 function applyPencilSketch(ctx: CanvasRenderingContext2D, frame: FrameContext) {
@@ -652,41 +600,93 @@ function applyPencilSketch(ctx: CanvasRenderingContext2D, frame: FrameContext) {
 }
 
 // ---------------------------------------------------------------------
-// 9. Vintage Timestamp — static overlay, no face tracking needed
+// 8. Vintage Timestamp — static overlay, no face tracking needed
 // ---------------------------------------------------------------------
 function drawVintageTimestamp(ctx: CanvasRenderingContext2D, frame: FrameContext) {
   const { boxW: w, boxH: h, t } = frame
-  const pad = w * 0.03
-  const fontSize = Math.max(11, w * 0.028)
+  if (w < 4 || h < 4) return
+
   const blink = Math.sin(t * 6) > 0
 
+  // Faint scanlines across the whole frame — cheap (a stroked line every
+  // few px, not a pixel-by-pixel pass) but reads unmistakably as "old
+  // camcorder" rather than a plain video feed with a label in the corner.
+  ctx.save()
+  ctx.globalAlpha = 0.08
+  ctx.strokeStyle = '#000000'
+  ctx.lineWidth = Math.max(1, h * 0.0022)
+  const lineGap = Math.max(3, h * 0.006)
+  for (let y = 0; y < h; y += lineGap) {
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(w, y)
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  // Soft vignette so the corners darken slightly, like an old CRT
+  // viewfinder — also helps the corner brackets and REC badge read
+  // clearly regardless of what's behind them.
+  ctx.save()
+  const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.hypot(w, h) * 0.6)
+  vignette.addColorStop(0, 'rgba(0,0,0,0)')
+  vignette.addColorStop(1, 'rgba(0,0,0,0.35)')
+  ctx.fillStyle = vignette
+  ctx.fillRect(0, 0, w, h)
+  ctx.restore()
+
+  // Camcorder viewfinder corner brackets, top-left and bottom-right.
+  const bracket = Math.min(w, h) * 0.07
+  const inset = w * 0.035
+  ctx.save()
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+  ctx.lineWidth = Math.max(2, w * 0.004)
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(inset, inset + bracket)
+  ctx.lineTo(inset, inset)
+  ctx.lineTo(inset + bracket, inset)
+  ctx.moveTo(w - inset - bracket, h - inset)
+  ctx.lineTo(w - inset, h - inset)
+  ctx.lineTo(w - inset, h - inset - bracket)
+  ctx.stroke()
+  ctx.restore()
+
+  // REC badge, bottom-right: an opaque pill behind the text so it stays
+  // legible over any footage — text alone with just a soft glow could
+  // wash out completely against bright or busy backgrounds, which is
+  // why this used to look like the filter wasn't doing anything.
+  const fontSize = Math.max(13, w * 0.032)
+  const pad = w * 0.03
   ctx.save()
   ctx.font = `700 ${fontSize}px ui-monospace, Menlo, Consolas, monospace`
-  ctx.textBaseline = 'bottom'
+  ctx.textBaseline = 'middle'
 
   const now = new Date()
   const dateStr = now.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit', year: 'numeric' })
   const timeStr = now.toLocaleTimeString(undefined, { hour12: false })
   const label = `REC  ${dateStr}  ${timeStr}`
 
+  const dotR = fontSize * 0.24
   const textWidth = ctx.measureText(label).width
-  const dotR = fontSize * 0.22
-  const totalWidth = textWidth + dotR * 3
-  const x = w - pad - totalWidth
-  const y = h - pad
+  const badgeH = fontSize * 1.9
+  const badgeW = dotR * 4 + textWidth + fontSize * 0.9
+  const badgeX = w - pad - badgeW
+  const badgeY = h - pad - badgeH
+  const badgeR = badgeH * 0.28
 
-  ctx.shadowColor = 'rgba(255,255,255,0.6)'
-  ctx.shadowBlur = fontSize * 0.5
-  ctx.fillStyle = 'rgba(255,255,255,0.92)'
-  ctx.fillText(label, x + dotR * 3, y)
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.55)'
+  roundRectPath(ctx, badgeX, badgeY, badgeW, badgeH, badgeR)
+  ctx.fill()
 
-  if (blink) {
-    ctx.shadowColor = 'rgba(255,60,60,0.9)'
-    ctx.shadowBlur = fontSize * 0.6
-    ctx.fillStyle = '#ff3b3b'
-    ctx.beginPath()
-    ctx.arc(x + dotR, y - fontSize * 0.35, dotR, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  const textY = badgeY + badgeH / 2
+  const dotX = badgeX + fontSize * 0.6
+  ctx.fillStyle = blink ? '#ff3b3b' : 'rgba(255,59,59,0.35)'
+  ctx.beginPath()
+  ctx.arc(dotX, textY, dotR, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.fillStyle = '#f5f5f0'
+  ctx.fillText(label, dotX + dotR * 2.2, textY)
   ctx.restore()
 }
