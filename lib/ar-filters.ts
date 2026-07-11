@@ -107,6 +107,33 @@ function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
+/**
+ * Angle (radians) of the line from `a` to `b`, normalized so the
+ * reference vector always points screen-rightward (dx >= 0).
+ *
+ * Why this is needed: mapPoint() mirrors landmarks by flipping X, and a
+ * flip is a *reflection*, not a rotation — it inverts handedness. That
+ * means naively trusting which raw MediaPipe landmark is "left" vs
+ * "right" (e.g. cheekLeft/cheekRight) for a direction vector can land
+ * you close to 180° out depending on the model's internal indexing,
+ * silently flipping "up" into "down" for anything anchored via
+ * cos(angle)/sin(angle) offsets — which is exactly why the halo used to
+ * render down near the nose instead of above the head. Forcing dx >= 0
+ * removes that spurious ~180° ambiguity while preserving the real head
+ * tilt (negating both dx and dy rotates the angle by exactly ±π, which
+ * cancels out an erroneous π offset but leaves a genuine small tilt
+ * angle unchanged).
+ */
+function faceAngle(a: Point, b: Point): number {
+  let dx = b.x - a.x
+  let dy = b.y - a.y
+  if (dx < 0) {
+    dx = -dx
+    dy = -dy
+  }
+  return Math.atan2(dy, dx)
+}
+
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -185,7 +212,7 @@ function drawDogFilter(ctx: CanvasRenderingContext2D, frame: FrameContext) {
 
   const faceW = dist(cheekL, cheekR)
   const faceH = dist(forehead, chin)
-  const angle = Math.atan2(cheekR.y - cheekL.y, cheekR.x - cheekL.x)
+  const angle = faceAngle(cheekL, cheekR)
 
   // Ears: floppy ovals anchored above each temple, rotated outward.
   const earSize = faceW * 0.42
@@ -286,7 +313,7 @@ function drawThugGlasses(ctx: CanvasRenderingContext2D, frame: FrameContext) {
   const outerL = p(LM.eyeLeftOuter)
   const outerR = p(LM.eyeRightOuter)
 
-  const angle = Math.atan2(outerR.y - outerL.y, outerR.x - outerL.x)
+  const angle = faceAngle(outerL, outerR)
   const cx = (outerL.x + outerR.x) / 2
   const cy = (outerL.y + outerR.y) / 2
   const width = dist(outerL, outerR) * 1.35
@@ -345,7 +372,7 @@ function drawFloralCrown(ctx: CanvasRenderingContext2D, frame: FrameContext) {
   const browL = p(LM.browLeft)
   const browR = p(LM.browRight)
 
-  const angle = Math.atan2(cheekR.y - cheekL.y, cheekR.x - cheekL.x)
+  const angle = faceAngle(cheekL, cheekR)
   const width = dist(cheekL, cheekR) * 1.05
   const centerX = (browL.x + browR.x) / 2
   const browY = (browL.y + browR.y) / 2
@@ -416,7 +443,7 @@ function drawCyberpunkVisor(ctx: CanvasRenderingContext2D, frame: FrameContext) 
   const cheekR = p(LM.cheekRight)
   const bridge = p(LM.noseBridge)
 
-  const angle = Math.atan2(outerR.y - outerL.y, outerR.x - outerL.x)
+  const angle = faceAngle(outerL, outerR)
   const width = dist(cheekL, cheekR) * 1.1
   const height = width * 0.22
 
@@ -478,7 +505,7 @@ function drawAngelicHalo(ctx: CanvasRenderingContext2D, frame: FrameContext) {
   const cheekL = p(LM.cheekLeft)
   const cheekR = p(LM.cheekRight)
 
-  const angle = Math.atan2(cheekR.y - cheekL.y, cheekR.x - cheekL.x)
+  const angle = faceAngle(cheekL, cheekR)
   const faceW = dist(cheekL, cheekR)
   const faceH = dist(forehead, chin)
 
