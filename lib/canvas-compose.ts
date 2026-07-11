@@ -37,25 +37,27 @@ export function mosaicRects(
 /** Draws `img` into the target rect using object-fit: cover semantics. */
 export function drawImageCover(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
   x: number,
   y: number,
   w: number,
   h: number,
 ) {
-  const srcRatio = img.width / img.height
+  const srcW = img instanceof HTMLVideoElement ? img.videoWidth : img.width
+  const srcH = img instanceof HTMLVideoElement ? img.videoHeight : img.height
+  const srcRatio = srcW / srcH
   const dstRatio = w / h
   let sx = 0
   let sy = 0
-  let sw = img.width
-  let sh = img.height
+  let sw = srcW
+  let sh = srcH
 
   if (srcRatio > dstRatio) {
-    sw = img.height * dstRatio
-    sx = (img.width - sw) / 2
+    sw = srcH * dstRatio
+    sx = (srcW - sw) / 2
   } else {
-    sh = img.width / dstRatio
-    sy = (img.height - sh) / 2
+    sh = srcW / dstRatio
+    sy = (srcH - sh) / 2
   }
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h)
 }

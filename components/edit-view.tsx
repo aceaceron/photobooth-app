@@ -318,7 +318,7 @@ export function EditView({
 
       <div className={cn("grid gap-8", isHost || chatMessages.length > 0 ? "lg:grid-cols-[1fr_380px]" : "grid-cols-1 max-w-3xl mx-auto")}>
         <div className="flex flex-col items-center gap-6">
-          <div className="flex items-start justify-center rounded-3xl border border-border/60 bg-muted/30 p-6 sm:p-10 w-full">
+          <div className="grid w-full place-items-center gap-8 rounded-3xl border border-border/60 bg-muted/30 p-6 sm:grid-cols-[auto_auto] sm:p-10">
             <Photostrip
               layout={layout}
               backgroundClass={background.className}
@@ -327,20 +327,20 @@ export function EditView({
               cells={cells}
               participantCount={participants.length}
               isDarkBg={isDarkBg}
-              className={cn('w-full max-w-[220px]', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
+              className={cn('w-full max-w-[200px] justify-self-center', layout === 'strip' && participants.length < 3 && 'max-w-[150px]')}
             />
+            {videoUrl && (
+              <div className="w-full max-w-[200px] justify-self-center overflow-hidden rounded-2xl border border-border/60 bg-black shadow-lg">
+                <p className="py-2 text-center text-[11px] font-semibold tracking-widest text-white/50 uppercase bg-zinc-900">Video Strip</p>
+                <video src={videoUrl} controls autoPlay loop className="w-full" />
+              </div>
+            )}
           </div>
-          {videoUrl && (
-            <div className="w-full max-w-[320px] rounded-3xl overflow-hidden border border-border/60 shadow-lg bg-black">
-              <p className="text-xs text-center py-2 text-white/50 bg-zinc-900 font-semibold tracking-widest uppercase">Video Strip</p>
-              <video src={videoUrl} controls autoPlay loop className="w-full" />
-            </div>
-          )}
         </div>
 
         <div className="flex flex-col gap-6 w-full max-w-md mx-auto">
           {participants.length > 1 && (!hostFinalized || chatMessages.length > 0) && (
-             <div className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur flex flex-col h-56">
+             <div className="rounded-3xl border border-border/60 bg-card/50 p-6 backdrop-blur flex flex-col h-56">
                 <h2 className="mb-2 text-sm font-semibold uppercase text-muted-foreground flex items-center gap-2">
                   Chat & Suggestions
                 </h2>
@@ -365,7 +365,7 @@ export function EditView({
 
           {isHost && !hostFinalized && (
             <>
-              <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">
+              <section className="rounded-3xl border border-border/60 bg-card/50 p-6 backdrop-blur">
                 <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                   <Sparkles className="size-4 text-primary" /> Adjust
                 </h2>
@@ -377,9 +377,9 @@ export function EditView({
                 </div>
               </section>
 
-              <section className="rounded-3xl border border-border/60 bg-card/50 p-5 backdrop-blur">
+              <section className="rounded-3xl border border-border/60 bg-card/50 p-6 backdrop-blur">
                 <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Filters</h2>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <PresetToggle active={!filters.vintage && !filters.bw} onClick={() => update('vintage', false)} label="Original" />
                   <PresetToggle active={filters.vintage} onClick={() => update('vintage', !filters.vintage)} label="Vintage" />
                   <PresetToggle active={filters.bw} onClick={() => update('bw', !filters.bw)} label="B&W" />
@@ -391,16 +391,16 @@ export function EditView({
             </>
           )}
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-3">
             {!isHost && !hostFinalized ? (
-               <div className="flex flex-col items-center justify-center p-4 bg-muted/30 rounded-2xl border text-center animate-pulse">
-                  <Sparkles className="size-6 text-primary mb-2" />
+               <div className="flex flex-col items-center justify-center gap-2 p-6 bg-muted/30 rounded-2xl border text-center animate-pulse">
+                  <Sparkles className="size-6 text-primary" />
                   <p className="font-semibold text-sm">Waiting for Host to finalize edits...</p>
                </div>
             ) : (
-              <>
+              <div className="flex flex-col gap-3">
                 {isHost && !hostFinalized && (
-                  <Button size="lg" className="h-12 w-full text-sm bg-green-600 hover:bg-green-700 text-white mb-4" onClick={onHostFinalize}>
+                  <Button size="lg" className="h-12 w-full text-sm bg-green-600 hover:bg-green-700 text-white" onClick={onHostFinalize}>
                     <Check className="size-4 mr-2" /> Done Editing
                   </Button>
                 )}
@@ -412,10 +412,10 @@ export function EditView({
                     <Download className="size-4" /> Save Video Strip
                   </Button>
                 )}
-              </>
+              </div>
             )}
 
-            <Button variant="outline" size="lg" className="h-11 w-full text-sm mt-4" onClick={onDone}>
+            <Button variant="outline" size="lg" className="h-11 w-full text-sm mt-1" onClick={onDone}>
               Back to home
             </Button>
           </div>

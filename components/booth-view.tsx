@@ -9,10 +9,10 @@ import { EditView } from '@/components/edit-view'
 import { BACKGROUNDS, LAYOUTS, colorForId, type CapturedFrame, type LayoutId, type BackgroundOption, type Participant, type FilterState } from '@/lib/photobooth'
 import { MAX_PEERS, useRoomConnection, type CountdownMessage } from '@/lib/webrtc/use-room-connection'
 import { roundRect, drawImageCover, stripCellRadius, drawStripWatermark, fillPresetBackground, loadImage } from '@/lib/canvas-compose'
-import { FaceFilterCanvas } from '@/components/face-filter-canvas'
-import { FilterMenu } from '@/components/filter-menu'
+import { ArCameraCanvas } from '@/components/ar-camera-canvas'
+import { FilterDock } from '@/components/filter-dock'
 import { useFaceTracking } from '@/hooks/use-face-tracking'
-import { FILTERS, drawFilter, type FilterId } from '@/lib/ar-filters'
+import { FILTERS, type FilterId } from '@/lib/ar-filters'
 
 type BoothViewProps = {
   mode: 'solo' | 'room'
@@ -54,6 +54,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   const [hostFinalized, setHostFinalized] = useState(false)
 
   const localVideoRef = useRef<HTMLVideoElement>(null)
+  const localCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Keyed by participant id, populated by RemoteVideoTile via onVideoRef —
+  // lets drawVideoLoop draw exact, known video elements for the
+  // recording composite instead of scraping the whole DOM for <video>
+  // tags (which can't distinguish "you" from a remote peer, or guarantee
+  // DOM order matches participant order).
+  const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
 
   // AR filters: only run the (comparatively expensive) face landmark model
   // when a face-tracked filter is actually selected.
@@ -209,7 +216,27 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       fillPresetBackground(ctx, background, 0, 0, W, H)
     }
 
-    const videos = Array.from(document.querySelectorAll('video')).filter(v => v.readyState >= 2)
+    // Explicit, known sources rather than scraping the DOM for every
+    // <video> tag: the local participant's already-mirrored,
+    // already-filtered master canvas (see ar-camera-canvas.tsx), plus
+    // each connected remote peer's raw video element. Building this in
+    // `participants` order also keeps the recording's grid layout
+    // consistent with what's on screen, which a raw DOM query can't
+    // guarantee.
+    type RenderSource =
+      | { kind: 'local-canvas'; el: HTMLCanvasElement }
+      | { kind: 'remote-video'; el: HTMLVideoElement }
+
+    const sources: RenderSource[] = []
+    participants.forEach((p) => {
+      if (p.isYou) {
+        const el = localCanvasRef.current
+        if (el && el.width > 0) sources.push({ kind: 'local-canvas', el })
+      } else {
+        const el = remoteVideoRefs.current.get(p.id)
+        if (el && el.readyState >= 2) sources.push({ kind: 'remote-video', el })
+      }
+    })
 
     cellDefs.forEach((c, i) => {
       ctx.save()
@@ -249,19 +276,28 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       // the same time — not just the single "current" shot — so all
       // pending rows are moving simultaneously, matching what's on screen,
       // until each one freezes the instant its own shot is taken.
-      } else if (videos.length > 0) {
+      } else if (sources.length > 0) {
         const len = participants.length
         const cols = len === 1 ? 1 : len === 3 ? 3 : 2
         const rows = Math.ceil(len / cols)
         const subW = (c.w - (cols - 1) * gapPx) / cols
         const subH = (c.h - (rows - 1) * gapPx) / rows
 
-        videos.forEach((video, idx) => {
+        sources.forEach((src, idx) => {
           const col = idx % cols
           const row = Math.floor(idx / cols)
           const dx = c.x + col * (subW + gapPx)
           const dy = c.y + row * (subH + gapPx)
 
+          if (src.kind === 'local-canvas') {
+            // Already mirrored and filtered at native resolution — a
+            // plain object-cover draw is all that's needed, and it means
+            // the filter is never recomputed for the recording pass.
+            drawImageCover(ctx, src.el, dx, dy, subW, subH)
+            return
+          }
+
+          const video = src.el
           ctx.save()
           ctx.translate(dx + subW, dy)
           ctx.scale(-1, 1)
@@ -383,34 +419,13 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
 
   function captureLocalFrame(shotIndex: number) {
     const video = localVideoRef.current
-    if (!video || video.readyState < 2) return
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth || 640
-    canvas.height = video.videoHeight || 480
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    
-    ctx.save()
-    ctx.translate(canvas.width, 0)
-    ctx.scale(-1, 1)
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    ctx.restore()
+    const canvas = localCanvasRef.current
+    if (!video || video.readyState < 2 || !canvas || canvas.width === 0) return
 
-    // Filter shapes are drawn in normal (unflipped) canvas space — see
-    // lib/ar-filters.ts — so they must sit outside the ctx.scale(-1, 1)
-    // block above, or text like the VHS timestamp would render backwards.
-    if (activeFilter !== 'none') {
-      drawFilter(ctx, activeFilter, {
-        boxW: canvas.width,
-        boxH: canvas.height,
-        videoW: video.videoWidth || canvas.width,
-        videoH: video.videoHeight || canvas.height,
-        landmarks: faceResultRef.current.landmarks,
-        faceDetected: faceResultRef.current.faceDetected,
-        t: performance.now() / 1000,
-      })
-    }
-
+    // ArCameraCanvas has already drawn this frame mirrored and with the
+    // active filter baked in — reading it directly means capture, the
+    // live preview, and the recorded video all show pixel-identical
+    // results, computed once.
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
     framesRef.current = [
@@ -549,17 +564,29 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
           <div key={p.id} className="relative aspect-video overflow-hidden rounded-3xl border border-border/60 bg-muted">
             {p.isYou && granted ? (
               <>
-                <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 size-full scale-x-[-1] object-cover" />
-                <FaceFilterCanvas
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="absolute inset-0 size-full opacity-0 pointer-events-none"
+                />
+                <ArCameraCanvas
                   videoRef={localVideoRef}
                   filterId={activeFilter}
-                  active={activeFilter !== 'none'}
                   resultRef={faceResultRef}
-                  className="pointer-events-none absolute inset-0 size-full"
+                  canvasRef={localCanvasRef}
+                  className="absolute inset-0 size-full object-cover"
                 />
               </>
             ) : !p.isYou ? (
-              <RemoteVideoTile stream={remotePeers.get(p.id)?.stream ?? null} />
+              <RemoteVideoTile
+                stream={remotePeers.get(p.id)?.stream ?? null}
+                onVideoRef={(el) => {
+                  if (el) remoteVideoRefs.current.set(p.id, el)
+                  else remoteVideoRefs.current.delete(p.id)
+                }}
+              />
             ) : null}
 
             {(!p.isYou || !granted) && !remotePeers.get(p.id)?.stream && (
@@ -581,10 +608,10 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
       </div>
 
       {granted && (
-        <div className="mt-4">
-          <FilterMenu active={activeFilter} onChange={setActiveFilter} disabled={!!plan || capturing} />
+        <div className="relative z-10 -mt-7 flex flex-col items-center gap-1.5">
+          <FilterDock active={activeFilter} onChange={setActiveFilter} disabled={!!plan || capturing} />
           {faceTrackingError && (
-            <p className="mt-1.5 text-center text-xs text-destructive">{faceTrackingError}</p>
+            <p className="text-center text-xs text-destructive">{faceTrackingError}</p>
           )}
         </div>
       )}
@@ -624,11 +651,15 @@ export function BoothView({ mode, isHost, roomCode, layout, background, displayN
   )
 }
 
-function RemoteVideoTile({ stream }: { stream: MediaStream | null }) {
+function RemoteVideoTile({ stream, onVideoRef }: { stream: MediaStream | null; onVideoRef?: (el: HTMLVideoElement | null) => void }) {
   const ref = useRef<HTMLVideoElement>(null)
   useEffect(() => {
     if (ref.current && stream) ref.current.srcObject = stream
   }, [stream])
+  useEffect(() => {
+    onVideoRef?.(stream ? ref.current : null)
+    return () => onVideoRef?.(null)
+  }, [stream, onVideoRef])
   if (!stream) return null
   return <video ref={ref} autoPlay playsInline className="absolute inset-0 size-full scale-x-[-1] object-cover" />
 }

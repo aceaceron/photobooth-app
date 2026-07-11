@@ -1,20 +1,27 @@
 /**
  * Procedural AR filter rendering.
  *
- * Every filter is drawn with plain Canvas 2D primitives rather than
- * external PNG/SVG assets — there are no bundled image files to ship or
- * license, and it keeps the whole pipeline (positions, rotation, scale)
- * in one place, in real units derived straight from the face landmarks.
+ * Every filter is drawn with plain Canvas 2D primitives (and, for the
+ * pixel-manipulation filters, raw ImageData) rather than external
+ * PNG/SVG assets — there are no bundled image files to ship or license,
+ * and it keeps the whole pipeline in one place, in real units derived
+ * straight from the face landmarks.
+ *
+ * Architecture: `drawFilter` is always called on a "master canvas" that
+ * the *video frame has already been drawn onto* (see
+ * components/ar-camera-canvas.tsx) — never on a bare transparent
+ * overlay. That's what lets the pixel filters (Glitch, Sketch) read back
+ * real camera pixels via `ctx.canvas`, and it means this exact canvas
+ * can be reused directly as the MediaRecorder / composited-recording
+ * source, so filters only ever get computed once per frame no matter
+ * how many places the result is displayed or recorded.
  *
  * Coordinate handling: MediaPipe's FaceLandmarker returns landmarks
- * normalized to the *raw* (unmirrored) video frame. The <video> element
- * showing the local feed is mirrored with a CSS `scale-x-[-1]` (so users
- * see themselves like a mirror), but this canvas is a plain, unmirrored
- * overlay sitting on top of it. `mapPoint` below both (a) reproduces the
- * video's `object-cover` crop so overlay coordinates line up with what's
- * actually visible, and (b) flips X to match the mirrored video, so a
- * single set of drawing functions works for both the live overlay and
- * the (also-mirrored) captured photo.
+ * normalized to the *raw* (unmirrored) video frame. The master canvas
+ * draws the video pre-mirrored (to match a natural selfie view), so
+ * `mapPoint` below reproduces that same mirroring — plus an
+ * `object-cover`-style crop when `boxW/boxH` differ from `videoW/videoH`
+ * — so landmark-anchored shapes line up with what's actually visible.
  */
 
 export type FilterId =
@@ -24,6 +31,9 @@ export type FilterId =
   | 'thug'
   | 'floral'
   | 'cyberpunk'
+  | 'halo'
+  | 'glitch'
+  | 'sketch'
   | 'timestamp'
 
 export type FilterDef = {
@@ -41,6 +51,9 @@ export const FILTERS: FilterDef[] = [
   { id: 'thug', name: 'Thug Life', emoji: '😎', needsFaceTracking: true },
   { id: 'floral', name: 'Floral Crown', emoji: '🌸', needsFaceTracking: true },
   { id: 'cyberpunk', name: 'Cyberpunk', emoji: '🤖', needsFaceTracking: true },
+  { id: 'halo', name: 'Angelic', emoji: '😇', needsFaceTracking: true },
+  { id: 'glitch', name: 'Glitch', emoji: '📺', needsFaceTracking: false },
+  { id: 'sketch', name: 'Sketch', emoji: '✏️', needsFaceTracking: false },
   { id: 'timestamp', name: 'VHS', emoji: '📼', needsFaceTracking: false },
 ]
 
@@ -119,9 +132,17 @@ export function drawFilter(
 ) {
   if (filterId === 'none') return
 
-  // Static, non-face-tracked overlay — always safe to draw.
+  // Static / whole-frame filters that don't need a detected face.
   if (filterId === 'timestamp') {
     drawVintageTimestamp(ctx, frame)
+    return
+  }
+  if (filterId === 'glitch') {
+    applyChromaticAberration(ctx, frame)
+    return
+  }
+  if (filterId === 'sketch') {
+    applyPencilSketch(ctx, frame)
     return
   }
 
@@ -142,6 +163,9 @@ export function drawFilter(
       break
     case 'cyberpunk':
       drawCyberpunkVisor(ctx, frame)
+      break
+    case 'halo':
+      drawAngelicHalo(ctx, frame)
       break
   }
 }
@@ -401,12 +425,16 @@ function drawCyberpunkVisor(ctx: CanvasRenderingContext2D, frame: FrameContext) 
   ctx.rotate(angle)
 
   ctx.save()
+  // 'screen' blending makes overlapping glow additive (like real light)
+  // instead of just alpha-compositing a translucent shape on top —
+  // brighter where the visor overlaps skin, never darker.
+  ctx.globalCompositeOperation = 'screen'
   ctx.shadowColor = '#00f6ff'
   ctx.shadowBlur = height * 0.9
   const grad = ctx.createLinearGradient(-width / 2, 0, width / 2, 0)
-  grad.addColorStop(0, 'rgba(0,246,255,0.05)')
-  grad.addColorStop(0.5, 'rgba(0,246,255,0.55)')
-  grad.addColorStop(1, 'rgba(255,0,200,0.35)')
+  grad.addColorStop(0, 'rgba(0,246,255,0.35)')
+  grad.addColorStop(0.5, 'rgba(0,246,255,0.85)')
+  grad.addColorStop(1, 'rgba(255,0,200,0.55)')
   ctx.fillStyle = grad
   roundRectPath(ctx, -width / 2, -height / 2, width, height, height * 0.4)
   ctx.fill()
@@ -420,23 +448,184 @@ function drawCyberpunkVisor(ctx: CanvasRenderingContext2D, frame: FrameContext) 
   ctx.restore()
 
   // Cheekbone tint glow beneath each eye.
+  ctx.save()
+  ctx.globalCompositeOperation = 'screen'
   ;[outerL, outerR].forEach((eye, idx) => {
     const cheekPt = idx === 0 ? cheekL : cheekR
     const tx = (eye.x + cheekPt.x) / 2
     const ty = (eye.y + cheekPt.y) / 2 + height
     const r = width * 0.16
     const radial = ctx.createRadialGradient(tx, ty, 0, tx, ty, r)
-    radial.addColorStop(0, 'rgba(255,0,200,0.35)')
+    radial.addColorStop(0, 'rgba(255,0,200,0.45)')
     radial.addColorStop(1, 'rgba(255,0,200,0)')
     ctx.fillStyle = radial
     ctx.beginPath()
     ctx.arc(tx, ty, r, 0, Math.PI * 2)
     ctx.fill()
   })
+  ctx.restore()
 }
 
 // ---------------------------------------------------------------------
-// 6. Vintage Timestamp — static overlay, no face tracking needed
+// 6. Angelic Halo — tilted glowing ring above the topmost head landmark
+// ---------------------------------------------------------------------
+function drawAngelicHalo(ctx: CanvasRenderingContext2D, frame: FrameContext) {
+  const lm = frame.landmarks!
+  const p = (i: number) => mapPoint(lm[i], frame)
+
+  const forehead = p(LM.foreheadTop)
+  const chin = p(LM.chin)
+  const cheekL = p(LM.cheekLeft)
+  const cheekR = p(LM.cheekRight)
+
+  const angle = Math.atan2(cheekR.y - cheekL.y, cheekR.x - cheekL.x)
+  const faceW = dist(cheekL, cheekR)
+  const faceH = dist(forehead, chin)
+
+  // Anchored a bit above the topmost (forehead) landmark, along the
+  // face's own "up" direction so it tilts naturally with head tilt.
+  const cx = forehead.x - Math.sin(angle) * faceH * 0.55
+  const cy = forehead.y - Math.cos(angle) * faceH * 0.55
+
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.rotate(angle - 0.18) // slight extra tilt for a "floating" feel
+  ctx.scale(1, 0.34) // flattened into an ellipse, as if viewed at an angle
+  ctx.globalCompositeOperation = 'screen'
+
+  const r = faceW * 0.62
+
+  ctx.shadowColor = 'rgba(255, 244, 190, 0.95)'
+  ctx.shadowBlur = r * 0.5
+  ctx.strokeStyle = 'rgba(255, 250, 220, 0.9)'
+  ctx.lineWidth = Math.max(3, r * 0.1)
+  ctx.beginPath()
+  ctx.arc(0, 0, r, 0, Math.PI * 2)
+  ctx.stroke()
+
+  ctx.shadowBlur = r * 0.22
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
+  ctx.lineWidth = Math.max(1.5, r * 0.03)
+  ctx.stroke()
+
+  ctx.restore()
+}
+
+// ---------------------------------------------------------------------
+// 7. Chromatic Aberration (Glitch) — whole-frame pixel manipulation,
+//    no face tracking needed. Reads back the already-drawn video pixels
+//    directly from ctx.canvas.
+// ---------------------------------------------------------------------
+function applyChromaticAberration(ctx: CanvasRenderingContext2D, frame: FrameContext) {
+  const { boxW: w, boxH: h, t } = frame
+  if (w < 4 || h < 4) return
+
+  // Process at a capped resolution and scale back up — an RGB channel
+  // split reads as a convincing glitch effect even at a few hundred
+  // pixels wide, and this keeps the per-frame cost bounded no matter how
+  // large the source video (native webcam frames are often 1280x720+,
+  // which would otherwise mean a multi-megapixel JS loop every tick).
+  const scale = Math.min(1, 480 / w)
+  const pw = Math.max(1, Math.round(w * scale))
+  const ph = Math.max(1, Math.round(h * scale))
+
+  const off = document.createElement('canvas')
+  off.width = pw
+  off.height = ph
+  const octx = off.getContext('2d', { willReadFrequently: true })
+  if (!octx) return
+  octx.drawImage(ctx.canvas, 0, 0, w, h, 0, 0, pw, ph)
+
+  const imgData = octx.getImageData(0, 0, pw, ph)
+  const src = imgData.data
+  const out = new Uint8ClampedArray(src.length)
+
+  const baseShift = Math.max(1, Math.round(pw * 0.012))
+  const shift = baseShift + Math.abs(Math.round(Math.sin(t * 9) * baseShift * 0.6))
+
+  for (let y = 0; y < ph; y++) {
+    // A handful of scanlines "tear" further sideways each tick, for a
+    // glitchy feel rather than a uniform, static RGB split.
+    const tear = Math.sin(y * 0.7 + t * 14) > 0.94 ? shift * 2 : 0
+    for (let x = 0; x < pw; x++) {
+      const i = (y * pw + x) * 4
+      const rx = Math.min(pw - 1, Math.max(0, x + shift + tear))
+      const bx = Math.min(pw - 1, Math.max(0, x - shift))
+      const ri = (y * pw + rx) * 4
+      const bi = (y * pw + bx) * 4
+      out[i] = src[ri] // red channel, shifted right
+      out[i + 1] = src[i + 1] // green channel, unshifted
+      out[i + 2] = src[bi + 2] // blue channel, shifted left
+      out[i + 3] = src[i + 3]
+    }
+  }
+
+  octx.putImageData(new ImageData(out, pw, ph), 0, 0)
+  ctx.drawImage(off, 0, 0, pw, ph, 0, 0, w, h)
+}
+
+// ---------------------------------------------------------------------
+// 8. Pencil Sketch — grayscale + 3x3 Laplacian edge-detection
+//    convolution, no face tracking needed.
+// ---------------------------------------------------------------------
+function applyPencilSketch(ctx: CanvasRenderingContext2D, frame: FrameContext) {
+  const { boxW: w, boxH: h } = frame
+  if (w < 4 || h < 4) return
+
+  // A 3x3 convolution is O(9 * pixels) — cheap at a downscaled working
+  // resolution, expensive at native 1280x720+. Process small, then
+  // upscale; edge detail at sketch scale doesn't need native res anyway.
+  const scale = Math.min(1, 400 / w)
+  const pw = Math.max(3, Math.round(w * scale))
+  const ph = Math.max(3, Math.round(h * scale))
+
+  const off = document.createElement('canvas')
+  off.width = pw
+  off.height = ph
+  const octx = off.getContext('2d', { willReadFrequently: true })
+  if (!octx) return
+  octx.drawImage(ctx.canvas, 0, 0, w, h, 0, 0, pw, ph)
+
+  const imgData = octx.getImageData(0, 0, pw, ph)
+  const src = imgData.data
+  const gray = new Float32Array(pw * ph)
+  for (let i = 0, px = 0; i < src.length; i += 4, px++) {
+    gray[px] = src[i] * 0.299 + src[i + 1] * 0.587 + src[i + 2] * 0.114
+  }
+
+  // Discrete Laplacian kernel: highlights edges (high local contrast),
+  // near-zero on flat regions. Inverting it onto a bright background
+  // gives the classic "graphite lines on paper" look.
+  const kernel = [0, -1, 0, -1, 4, -1, 0, -1, 0]
+  const out = new Uint8ClampedArray(src.length)
+
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      let acc = 0
+      let k = 0
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const sx = Math.min(pw - 1, Math.max(0, x + kx))
+          const sy = Math.min(ph - 1, Math.max(0, y + ky))
+          acc += gray[sy * pw + sx] * kernel[k++]
+        }
+      }
+      const edge = Math.min(255, Math.max(0, acc))
+      const shade = Math.min(255, Math.max(0, 255 - edge * 1.6))
+      const i = (y * pw + x) * 4
+      out[i] = shade
+      out[i + 1] = shade
+      out[i + 2] = shade
+      out[i + 3] = 255
+    }
+  }
+
+  octx.putImageData(new ImageData(out, pw, ph), 0, 0)
+  ctx.drawImage(off, 0, 0, pw, ph, 0, 0, w, h)
+}
+
+// ---------------------------------------------------------------------
+// 9. Vintage Timestamp — static overlay, no face tracking needed
 // ---------------------------------------------------------------------
 function drawVintageTimestamp(ctx: CanvasRenderingContext2D, frame: FrameContext) {
   const { boxW: w, boxH: h, t } = frame
